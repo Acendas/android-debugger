@@ -1,0 +1,22 @@
+# Gradle / Kotlin
+server/.gradle/
+server/.kotlin/
+server/build/
+server/.idea/
+server/*.iml
+server/local.properties
+
+# Editor
+.idea/
+*.iml
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# IMPORTANT: dist/android-debugger-server.jar is INTENTIONALLY committed.
+# It's the shipped server binary; rebuild with `cd server && ./gradlew shadowJar`.

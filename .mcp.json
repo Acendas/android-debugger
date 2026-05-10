@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "android-debugger": {
+      "type": "stdio",
+      "command": "java",
+      "args": [
+        "-jar",
+        "${CLAUDE_PLUGIN_ROOT}/dist/android-debugger-server.jar"
+      ]
+    }
+  }
+}

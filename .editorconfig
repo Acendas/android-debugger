@@ -1,0 +1,26 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.{kt,kts,kotlin}]
+indent_size = 4
+ij_kotlin_imports_layout = *,java.**,javax.**,kotlin.**,^
+ij_kotlin_packages_to_use_import_on_demand = unset
+
+[*.{json,yml,yaml,md}]
+indent_size = 2
+
+[*.{gradle,gradle.kts}]
+indent_size = 4
+
+[Makefile]
+indent_style = tab
+
+[*.bat]
+end_of_line = crlf

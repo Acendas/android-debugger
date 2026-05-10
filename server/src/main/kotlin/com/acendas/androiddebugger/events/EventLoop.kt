@@ -1,0 +1,442 @@
+package com.acendas.androiddebugger.events
+
+import com.acendas.androiddebugger.Session
+import com.acendas.androiddebugger.SessionState
+import com.acendas.androiddebugger.breakpoints.BreakpointKind
+import com.acendas.androiddebugger.breakpoints.BreakpointManager
+import com.acendas.androiddebugger.breakpoints.BreakpointMeta
+import com.acendas.androiddebugger.breakpoints.LogMessageRenderer
+import com.acendas.androiddebugger.breakpoints.LogpointBuffer
+import com.acendas.androiddebugger.inspection.Evaluator
+import com.acendas.androiddebugger.inspection.ExprParser
+import com.acendas.androiddebugger.inspection.ObjectIdMint
+import com.sun.jdi.AbsentInformationException
+import com.sun.jdi.BooleanValue
+import com.sun.jdi.PrimitiveValue
+import com.sun.jdi.VMDisconnectedException
+import com.sun.jdi.VirtualMachine
+import com.sun.jdi.event.AccessWatchpointEvent
+import com.sun.jdi.event.BreakpointEvent
+import com.sun.jdi.event.ClassPrepareEvent
+import com.sun.jdi.event.Event
+import com.sun.jdi.event.EventQueue
+import com.sun.jdi.event.EventSet
+import com.sun.jdi.event.ExceptionEvent
+import com.sun.jdi.event.LocatableEvent
+import com.sun.jdi.event.MethodEntryEvent
+import com.sun.jdi.event.MethodExitEvent
+import com.sun.jdi.event.ModificationWatchpointEvent
+import com.sun.jdi.event.StepEvent
+import com.sun.jdi.event.ThreadDeathEvent
+import com.sun.jdi.event.ThreadStartEvent
+import com.sun.jdi.event.VMDeathEvent
+import com.sun.jdi.event.VMDisconnectEvent
+import com.sun.jdi.event.VMStartEvent
+import com.sun.jdi.event.WatchpointEvent
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.trySendBlocking
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import org.slf4j.LoggerFactory
+
+/**
+ * Single coroutine that pumps `vm.eventQueue()` into a [Channel] of typed [DebugEvent]s.
+ * `wait_for_event` reads from the channel; on a SUSPEND_* event the loop also flips
+ * [Session.state] / [Session.pausedThread] so subsequent inspection tools see the
+ * paused state without racing.
+ *
+ * The channel is bounded (capacity = 128) with [BufferOverflow.DROP_OLDEST] — if no one
+ * is calling `wait_for_event`, we silently drop the oldest events rather than blocking
+ * the JDI thread (which would freeze the target). Per Task 4.1.3.1.
+ *
+ * Phase 3 wiring: Breakpoint/Watchpoint/MethodEntry/MethodExit events are looked up in
+ * [BreakpointManager]; conditional bps eval and resume on false; hit-count bps suppress
+ * until the threshold; logpoints render the message and resume immediately. ClassPrepare
+ * events drive deferred-bp resolution.
+ */
+class EventLoop(
+    private val vm: VirtualMachine,
+    private val channel: Channel<DebugEvent>,
+    dispatcher: CoroutineDispatcher = Dispatchers.IO,
+) {
+    private val log = LoggerFactory.getLogger("android-debugger.events")
+    private val parentJob = SupervisorJob()
+    private val scope = CoroutineScope(dispatcher + parentJob)
+
+    @Volatile
+    private var pumpJob: Job? = null
+
+    /** Start pumping. Returns the running job so callers can hold + cancel it. */
+    fun start(): Job {
+        val job = scope.launch {
+            val queue: EventQueue = vm.eventQueue()
+            try {
+                while (isActive) {
+                    val set: EventSet = try {
+                        queue.remove()
+                    } catch (_: InterruptedException) {
+                        break
+                    } catch (_: VMDisconnectedException) {
+                        break
+                    }
+                    handleEventSet(set)
+                }
+            } catch (_: VMDisconnectedException) {
+                // Fall through to disconnect signal.
+            } catch (t: Throwable) {
+                log.warn("event loop terminated unexpectedly: ${t.message}")
+            } finally {
+                runCatching { channel.trySend(DebugEvent.Disconnect) }
+            }
+        }
+        pumpJob = job
+        return job
+    }
+
+    /**
+     * Process one `EventSet`. Each set arrives with its own suspend policy (per the
+     * triggering request); we decide per-event whether to **deliver** a `Stopped`
+     * (paused) signal to the channel and leave the thread suspended, or **swallow**
+     * the event and resume.
+     *
+     * The set-level `resume()` honors the original suspend policy:
+     *  - SUSPEND_NONE → no-op (nothing was suspended)
+     *  - SUSPEND_EVENT_THREAD → resumes just the thread that triggered
+     *  - SUSPEND_ALL → resumes all threads
+     *
+     * If we deliver `Stopped`, we DO NOT call `set.resume()` — the agent will resume
+     * via the `resume` / `step_*` tools.
+     */
+    private fun handleEventSet(set: EventSet) {
+        var deliveredStop = false
+        var disconnect = false
+        for (event in set) {
+            val outcome = processEvent(event)
+            when (outcome) {
+                Outcome.STOPPED -> deliveredStop = true
+                Outcome.RESUME -> { /* keep going */ }
+                Outcome.DISCONNECT -> { disconnect = true; break }
+            }
+        }
+        if (disconnect) return
+        if (!deliveredStop) {
+            try {
+                set.resume()
+            } catch (_: VMDisconnectedException) {
+                // Fall through; outer loop will see VMDisconnectEvent next.
+            } catch (_: Throwable) {
+                // Best-effort resume.
+            }
+        }
+    }
+
+    private enum class Outcome { STOPPED, RESUME, DISCONNECT }
+
+    private fun processEvent(event: Event): Outcome {
+        // VM lifecycle short-circuits.
+        if (event is VMDisconnectEvent || event is VMDeathEvent) {
+            runCatching { channel.trySend(DebugEvent.Disconnect) }
+            return Outcome.DISCONNECT
+        }
+        if (event is VMStartEvent || event is ThreadStartEvent || event is ThreadDeathEvent) {
+            return Outcome.RESUME
+        }
+
+        // Class-prepare drives deferred breakpoint resolution. We resolve every meta
+        // whose deferred-prepare-request matches this event, install BPs on the new
+        // type, and surface the agent-facing event after.
+        if (event is ClassPrepareEvent) {
+            handleClassPrepare(event)
+            runCatching {
+                channel.trySend(DebugEvent.ClassPrepare(
+                    className = runCatching { event.referenceType().name() }.getOrDefault(""),
+                ))
+            }
+            return Outcome.RESUME
+        }
+
+        // Step events always deliver. The Stepper tool waits for them.
+        if (event is StepEvent) {
+            sendStopped("step", event)
+            markPaused(event)
+            return Outcome.STOPPED
+        }
+
+        // Exception events: resolve bp meta if any, push Exception event, then mark paused.
+        if (event is ExceptionEvent) {
+            return handleException(event)
+        }
+
+        // Field watchpoints — both kinds — deliver as breakpoint-style stops with the
+        // owning meta's id so the agent can correlate.
+        if (event is WatchpointEvent) {
+            return handleWatchpoint(event)
+        }
+
+        // Method entry/exit — class-filter is set by JDI; per-method matching here.
+        if (event is MethodEntryEvent) {
+            return handleMethodEntryExit(event, exit = false)
+        }
+        if (event is MethodExitEvent) {
+            return handleMethodEntryExit(event, exit = true)
+        }
+
+        // Plain breakpoint event — line/conditional/hit-count/logpoint all funnel here.
+        if (event is BreakpointEvent) {
+            return handleBreakpoint(event)
+        }
+
+        // Unknown/unhandled — let JDI's default suspend policy resume normally.
+        return Outcome.RESUME
+    }
+
+    private fun handleException(event: ExceptionEvent): Outcome {
+        val exc = runCatching { event.exception() }.getOrNull()
+        val excId = exc?.let { ObjectIdMint.registerObject(it) }
+        val excClass = exc?.referenceType()?.name()
+        val caughtNow = runCatching { event.catchLocation() != null }.getOrDefault(false)
+        runCatching {
+            channel.trySend(DebugEvent.Exception(
+                exceptionId = excId,
+                exceptionClass = excClass,
+                threadId = runCatching { event.thread().uniqueID() }.getOrNull(),
+                caught = caughtNow,
+            ))
+        }
+        // Bookkeeping for any matching ExceptionRequest meta.
+        val meta = BreakpointManager.findByRequest(event.request())
+        meta?.totalHits?.incrementAndGet()
+        meta?.deliveredStops?.incrementAndGet()
+        markPaused(event)
+        return Outcome.STOPPED
+    }
+
+    private fun handleBreakpoint(event: BreakpointEvent): Outcome {
+        val meta = BreakpointManager.findByRequest(event.request())
+        if (meta == null) {
+            // Unknown breakpoint (e.g., the run_to_line one-shot, which is not in the manager).
+            // Deliver a generic stop so existing tools (run_to_line, step) keep working.
+            sendStopped("breakpoint", event, breakpointId = null)
+            markPaused(event)
+            return Outcome.STOPPED
+        }
+        meta.totalHits.incrementAndGet()
+        if (!meta.enabled) {
+            // The user disabled this — JDI requests are already disabled, but in case of
+            // a race, just resume.
+            return Outcome.RESUME
+        }
+
+        // Logpoint path: render, push to buffer, resume immediately. We need locals so
+        // suspend policy is SUSPEND_EVENT_THREAD; resuming the event-set restores execution.
+        val logTemplate = meta.logMessage
+        if (logTemplate != null) {
+            val rendered = try {
+                LogMessageRenderer.render(logTemplate, event.thread())
+            } catch (t: Throwable) {
+                "<render error: ${t.message ?: t::class.simpleName}>"
+            }
+            val loc = runCatching { event.location() }.getOrNull()
+            val file = try { loc?.sourceName() } catch (_: AbsentInformationException) { null }
+            val line = loc?.lineNumber() ?: meta.line ?: -1
+            LogpointBuffer.push(
+                threadName = runCatching { event.thread().name() }.getOrNull(),
+                file = file,
+                line = line,
+                breakpointId = meta.id,
+                rendered = rendered,
+            )
+            meta.logpointEntries.incrementAndGet()
+            return Outcome.RESUME
+        }
+
+        // Conditional path: evaluate + resume on false. We use the existing Evaluator,
+        // which is single-flight; if a parallel eval is already running, treat it as
+        // "condition unknown — surface the stop" so we don't accidentally swallow real hits.
+        val condition = meta.condition
+        if (condition != null) {
+            val passed = evalCondition(condition, event)
+            if (!passed) {
+                meta.falseConditionHits.incrementAndGet()
+                return Outcome.RESUME
+            }
+        }
+
+        // Hit-count path: bump suppressed counter and resume until threshold reached.
+        val hitCount = meta.hitCount
+        if (hitCount != null && hitCount > 1) {
+            // Hit `hitCount` means deliver on the Nth and onwards. `totalHits` was
+            // already incremented; if we haven't reached N yet, suppress.
+            if (meta.totalHits.get() < hitCount) {
+                meta.suppressedHits.incrementAndGet()
+                return Outcome.RESUME
+            }
+        }
+
+        // Deliver as a stopped event.
+        sendStopped("breakpoint", event, breakpointId = meta.id)
+        meta.deliveredStops.incrementAndGet()
+        markPaused(event)
+        return Outcome.STOPPED
+    }
+
+    private fun handleMethodEntryExit(event: LocatableEvent, exit: Boolean): Outcome {
+        val request = if (exit) (event as MethodExitEvent).request() else (event as MethodEntryEvent).request()
+        val meta = BreakpointManager.findByRequest(request)
+        if (meta == null) {
+            // No meta — should only happen if the bp was just removed mid-flight. Resume.
+            return Outcome.RESUME
+        }
+        meta.totalHits.incrementAndGet()
+        if (!meta.enabled) return Outcome.RESUME
+
+        // Per-method filtering in the handler — JDI's MethodEntryRequest filter is by
+        // class only.
+        val expectedMethod = meta.methodName
+        val actualMethod = runCatching {
+            if (exit) (event as MethodExitEvent).method().name()
+            else (event as MethodEntryEvent).method().name()
+        }.getOrNull()
+        if (expectedMethod != null && actualMethod != expectedMethod) {
+            meta.suppressedHits.incrementAndGet()
+            return Outcome.RESUME
+        }
+
+        sendStopped(
+            reason = if (exit) "method_exit" else "method_entry",
+            event = event,
+            breakpointId = meta.id,
+        )
+        meta.deliveredStops.incrementAndGet()
+        markPaused(event)
+        return Outcome.STOPPED
+    }
+
+    private fun handleWatchpoint(event: WatchpointEvent): Outcome {
+        val meta = BreakpointManager.findByRequest(event.request())
+        if (meta == null) return Outcome.RESUME
+        meta.totalHits.incrementAndGet()
+        if (!meta.enabled) return Outcome.RESUME
+
+        val reason = if (event is AccessWatchpointEvent) "field_access" else "field_modification"
+        sendStopped(reason, event, breakpointId = meta.id)
+        meta.deliveredStops.incrementAndGet()
+        markPaused(event)
+        return Outcome.STOPPED
+    }
+
+    private fun handleClassPrepare(event: ClassPrepareEvent) {
+        val meta = BreakpointManager.findByPrepareRequest(event.request())
+            ?: return
+        val type = runCatching { event.referenceType() }.getOrNull() ?: return
+        when (meta.kind) {
+            BreakpointKind.LINE -> {
+                runCatching { BreakpointManager.installDeferredLineBreakpoint(vm, meta, type) }
+            }
+            BreakpointKind.EXCEPTION -> {
+                val cls = meta.exceptionClass ?: return
+                if (type.name() != cls) return
+                val erm = vm.eventRequestManager()
+                val req = runCatching {
+                    erm.createExceptionRequest(type, meta.caught, meta.uncaught).apply {
+                        setSuspendPolicy(com.sun.jdi.request.EventRequest.SUSPEND_EVENT_THREAD)
+                        if (meta.enabled) enable() else disable()
+                    }
+                }.getOrNull()
+                if (req != null) meta.activeRequests.add(req)
+            }
+            else -> {
+                // Method entry/exit and field watchpoints aren't deferred via class-prepare in v1.
+            }
+        }
+    }
+
+    private fun evalCondition(condition: String, event: BreakpointEvent): Boolean {
+        return try {
+            val ast = ExprParser.parse(condition)
+            val v = Evaluator.evaluate(event.thread(), 0, ast)
+            when (v) {
+                is BooleanValue -> v.value()
+                null -> false
+                is PrimitiveValue -> {
+                    // Treat any non-zero numeric as true for permissiveness; the agent
+                    // should normally pass a boolean expression though.
+                    v.toString() != "0"
+                }
+                else -> true // Non-null object → truthy.
+            }
+        } catch (_: Throwable) {
+            // Eval failure → surface the stop so the agent can investigate. Same
+            // policy as IntelliJ: don't silently swallow on a broken condition.
+            true
+        }
+    }
+
+    private fun sendStopped(reason: String, event: LocatableEvent, breakpointId: Int? = null) {
+        runCatching {
+            channel.trySend(DebugEvent.Stopped(
+                reason = reason,
+                threadId = runCatching { event.thread().uniqueID() }.getOrNull(),
+                threadName = runCatching { event.thread().name() }.getOrNull(),
+                breakpointId = breakpointId,
+                location = locationString(event),
+            ))
+        }.onFailure {
+            // Channel closed — disconnect path; nothing to do.
+        }.let {
+            // If the Channel's first try failed (full buffer + DROP_OLDEST), make a
+            // best-effort blocking send so we don't lose the stop signal.
+            if (it.isFailure) {
+                runCatching {
+                    channel.trySendBlocking(DebugEvent.Stopped(
+                        reason = reason,
+                        threadId = runCatching { event.thread().uniqueID() }.getOrNull(),
+                        threadName = runCatching { event.thread().name() }.getOrNull(),
+                        breakpointId = breakpointId,
+                        location = locationString(event),
+                    ))
+                }
+            }
+        }
+    }
+
+    private fun markPaused(event: LocatableEvent) {
+        val thread = runCatching { event.thread() }.getOrNull()
+        Session.pausedThread = thread
+        Session.state = SessionState.ATTACHED_PAUSED
+        Session.bumpVmStateVersion()
+        // Per Story 7.1.4: any breakpoint / watchpoint / exception / method_entry /
+        // method_exit hit resets the step budget for that thread — the agent reached
+        // a real "interesting" point, not a same-method step. We DON'T reset on a
+        // step event since same-method-step counts are exactly what the budget tracks.
+        if (thread != null && event !is com.sun.jdi.event.StepEvent) {
+            Session.stepBudget.reset(thread.uniqueID())
+        }
+    }
+
+    /** Cancel the loop, joining briefly so subsequent vm.dispose() races aren't possible. */
+    suspend fun stop() {
+        try {
+            parentJob.cancelAndJoin()
+        } catch (_: Throwable) {
+            // Best-effort.
+        }
+    }
+
+    private fun locationString(event: LocatableEvent): String? = try {
+        val loc = event.location()
+        val file = try { loc.sourceName() } catch (_: AbsentInformationException) { null }
+        val cls = loc.declaringType().name()
+        val line = loc.lineNumber()
+        if (file != null) "$cls($file:$line)" else "$cls:$line"
+    } catch (_: Throwable) {
+        null
+    }
+}

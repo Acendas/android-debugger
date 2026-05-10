@@ -1,0 +1,65 @@
+---
+name: Trace via logpoint sweep
+description: This skill should be used when the user asks "find where X happens", "trace this code path", "log when Y is called", "instrument suspect code", "where does this value get set", or runs `/android-debugger:trace`. Cursor-style logpoint sweep — identifies a suspect call graph from the user's project, places 5–10 non-suspending logpoints (no app pause), prompts the user to reproduce, then harvests the timeline from logcat. Replaces `Log.d` archaeology.
+argument-hint: "<symptom or call site to trace>"
+allowed-tools: Read, Grep, Glob, mcp__android-debugger__connection_status, mcp__android-debugger__add_line_breakpoint, mcp__android-debugger__list_breakpoints, mcp__android-debugger__remove_breakpoint, mcp__android-debugger__tail_logcat, mcp__android-debugger__read_logcat, mcp__android-debugger__stop_logcat
+---
+
+# Trace — instrument-and-reproduce, no breakpoint pause
+
+Some bugs don't need stepping — they need to know "what got called, in what order, with what values." Logpoints are non-suspending breakpoints that emit a rendered log line and immediately resume. Drop a handful across a suspect call graph, run the failing path, read the timeline.
+
+This is the highest-leverage workflow for ordering bugs, race conditions, and "I don't know where this value comes from" symptoms.
+
+## What you do
+
+1. Call `mcp__android-debugger__connection_status`. Must be attached.
+
+2. **Identify the suspect call graph.** The argument is a symptom or seed location — e.g., "login flow" or "MyVm.uiState". Use Read/Grep on the user's project (NOT decompiled bytecode) to find:
+   - The entry point (e.g., the click handler, lifecycle method, network callback).
+   - Methods that READ the suspect value.
+   - Methods that WRITE the suspect value.
+   - Aim for 5–10 instrumentation points across the call graph. More than 12 is noise.
+
+3. **Confirm the BATCH** with one `AskUserQuestion` listing the proposed `(file:line)` set with a one-line label each. Do NOT ask per-logpoint — the user wants to confirm the recipe, not approve 10 things.
+
+4. **Place the logpoints.** For each `(file, line)`, call `mcp__android-debugger__add_line_breakpoint` with:
+   - `file: <relative path>`
+   - `line: <number>`
+   - `log_message: <template>` — use `{expr}` placeholders to inject local values, e.g. `"login.click user={user.id} pwLen={password.length()}"`. Keep templates short; the rendered values get appended to the log line.
+
+5. **Start logcat tail** (if not already running) via `mcp__android-debugger__tail_logcat` filtering on the app's package + tag `debugger:logpoint`. Save the `buffer_id`.
+
+6. **Tell the user to reproduce** the symptom. "Run the failing flow now. I'll harvest the timeline when you say go."
+
+7. **Wait for the user's signal** — they'll tell you they triggered it. (You can also poll `read_logcat` with a short interval.)
+
+8. **Harvest** via `mcp__android-debugger__read_logcat({ buffer_id })`. Render the timeline as a numbered list with timestamps:
+
+   ```
+   01  T+0ms     login.click user=u_42 pwLen=8
+   02  T+12ms    AuthRepo.signIn called user=u_42
+   03  T+340ms   AuthRepo.signIn returned ok=false err=NetworkError
+   04  T+341ms   LoginVm._uiState <- Failure(NetworkError)
+   ...
+   ```
+
+9. **Reason over the timeline.** Flag:
+   - Order surprises ("event 03 happened before 02 — that's weird").
+   - Missing entries ("expected `AuthRepo.signOut` between 02 and 03 but didn't see it").
+   - Repeated invocations ("step 04 ran 3 times — possible recomposition / leaked observer").
+
+10. **Propose** the hypothesis + suggested next move (drill in with `:explain` at a specific bp, set a conditional breakpoint to capture state on the next failing iteration, or fix the obvious thing).
+
+11. **Cleanup.** Ask the user if they want to keep the logpoints (for further runs) or remove them. On confirm, call `remove_breakpoint` for each id from `list_breakpoints`. Stop the logcat buffer with `stop_logcat`.
+
+## What you do NOT do
+
+- Do not place logpoints inside framework code (java.*, android.*, kotlin.*) — too noisy. Stick to the user's project sources.
+- Do not use suspending breakpoints when a logpoint will do — pause-on-every-hit destroys the timing the user is trying to understand.
+- Do not write huge `log_message` templates. 1–4 placeholders max.
+- Do not chase obvious ordering anomalies before the user asks — surface them, let them direct the next move.
+
+## Cross-platform notes
+
+All work routes through MCP tools — no shell commands needed. Skill is fully portable.
