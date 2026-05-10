@@ -2,7 +2,7 @@
 name: Investigate an Android issue
 description: This skill should be used when the user asks to "debug this android bug", "investigate why X happens", "find the cause of this issue", "I have a problem with my android app", "why is this happening", "help me debug this", or runs `/android-debugger:investigate`. The catch-all orchestrator — first asks whether to drive interactively or hand the loop to the autonomous Android Debug Orchestrator agent, then either triages into a specialist skill (:catch / :trace / :bisect-flaky / :walk) or dispatches to the agent for end-to-end investigation. Use this when you don't know which specialized skill fits.
 argument-hint: "<bug description or investigation goal>"
-allowed-tools: AskUserQuestion, Task, mcp__android-debugger__connection_status, mcp__android-debugger__add_line_breakpoint, mcp__android-debugger__add_field_watchpoint
+allowed-tools: AskUserQuestion, Task, mcp__android-debugger__connection_status, mcp__android-debugger__render_capabilities, mcp__android-debugger__add_line_breakpoint, mcp__android-debugger__add_field_watchpoint
 ---
 
 # Investigate — top-level debugging orchestrator
@@ -17,44 +17,31 @@ The catch-all entry point. The user describes a problem; this skill picks betwee
 
    | Mode | When to pick |
    |---|---|
-   | **Interactive** (Recommended for behavior bugs) | The user has product/UX context, wants to see each snapshot, plans to redirect mid-flight. Best for "explain what's happening", "why is this state wrong", anything where human judgment matters. |
-   | **Autonomous** | The bug has a clear repro recipe. The user wants the agent to iterate without watching each tool call. Best for crashes with stack traces, mechanical flaky tests, "investigate this and tell me when you're done". |
+   | **Autonomous** (Recommended when there's a concrete repro recipe) | The goal mentions a specific exception, test name, or call path. The user wants the agent to iterate without watching each tool call. Best for crashes with stack traces, named flaky tests, "investigate this and tell me when you're done". |
+   | **Interactive** | The goal needs product judgment ("does this feel laggy?", "should this UI be different?") or the user explicitly asks to drive. Best for ambiguous behavior, UX-flavored questions, anything where the user wants to see each snapshot and redirect mid-flight. |
 
-   Default to interactive if the user's argument doesn't suggest "let me know when you're done" semantics.
+   **Default rule:** default to **autonomous** if the goal has a concrete repro recipe (specific exception name, test name, call path, file/method named); default to **interactive** if the goal needs product judgment or the user explicitly asks to drive. Busy users want the loop run for them unless they signal otherwise — biasing to autonomous matches the skill-creator framework's "models under-trigger" finding.
 
-3. **Interactive path** — triage the goal into one of four shapes and dispatch to a specialist skill:
+3. **Triage by shape.** Read `skills/investigate/references/four-shape-triage.md` and apply the shape-matching rules + sub-shape branches there. The file is canonical (shared with the orchestrator agent), so a future change to the table updates both behaviors. Sub-shapes within "Behavior" (covered in the file) are the most useful — surface them above the four-shape table when routing.
 
-   | Shape | Trigger words | Dispatches to |
-   |---|---|---|
-   | **Crash** | "X crashes", "NPE", "throws", a stack trace pasted, "fatal error" | `/android-debugger:catch` |
-   | **Unexpected behavior** | "Login does nothing on slow networks", "the value is wrong", "Y doesn't work", "find when X gets set to Y" | `/android-debugger:trace` (if ordering/multi-call), or set a breakpoint + `:explain` (if known line) |
-   | **Flaky test** | "Test fails 1 in 10 runs", "intermittent failure", "this test is flaky" | `/android-debugger:bisect-flaky` |
-   | **Onboarding / understanding** | "Walk me through X", "show me how Y works" | `/android-debugger:walk` |
+4. **Interactive path** — once you've classified the shape via the reference, dispatch to the matching specialist skill: `/android-debugger:catch` (crash), `/android-debugger:trace` or set a bp + `:explain` (behavior), `/android-debugger:bisect-flaky` (flaky test), `/android-debugger:walk` (onboarding). For Behavior sub-shapes, follow the per-sub-shape routing in the reference.
 
-4. **Autonomous path** — dispatch to the orchestrator agent:
+5. **Autonomous path** — dispatch to the orchestrator agent. Pass an attached-session hint so the agent doesn't re-run preflight that this skill just confirmed:
 
    ```
    Agent({
      subagent_type: "android-debug-orchestrator",
      description: "Autonomous Android debug investigation",
-     prompt: "<the user's goal verbatim, with any context they provided>"
+     prompt: "<the user's goal verbatim, with any context they provided>\n[orchestrator note: session is attached to <package> on <serial>; skip preflight]"
    })
    ```
 
    The agent runs the loop end-to-end and returns a structured findings report (hypothesis / evidence / proposed fix shape / repro recipe). Render the report verbatim back to the user — don't second-guess it.
 
-5. After autonomous dispatch returns, ask whether the user wants to:
+6. After autonomous dispatch returns, ask whether the user wants to:
    - Apply the proposed fix (you do not auto-apply).
    - Drill into a specific frame interactively (suggests `/android-debugger:explain`).
    - Detach (suggests `/android-debugger:detach`).
-
-## Sub-shapes within "unexpected behavior"
-
-The "unexpected behavior" interactive bucket is the broadest. Sub-route:
-
-- **Bug at a known line** (user names the file/method) → set a breakpoint there directly via `add_line_breakpoint`, prompt the user to reproduce, then run `/android-debugger:explain` on the hit.
-- **"Find where X happens" / "trace this" / "what gets called"** → `/android-debugger:trace` (logpoint sweep is the right tool).
-- **"State is wrong" with no reproduction recipe** → put a watchpoint on the suspect field via `add_field_watchpoint` (capability permitting), prompt user to reproduce, run `:explain` when the watch fires.
 
 ## What you do NOT do
 

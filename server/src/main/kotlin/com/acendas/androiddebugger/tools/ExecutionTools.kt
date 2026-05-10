@@ -69,7 +69,157 @@ object ExecutionTools {
         registerResume(server)
         registerPause(server)
         registerWaitForEvent(server)
+        registerStepUntilMethodChange(server)
     }
+
+    /**
+     * Per BR-04: `step_until_method_change` loops `step_over` server-side until the
+     * current method changes, so the model doesn't have to issue 50 individual step
+     * calls in a `:walk` sequence. Bails with `step_budget_exhausted: true` if
+     * `max_steps` is reached without the method changing.
+     */
+    private fun registerStepUntilMethodChange(server: Server) {
+        server.addTool(
+            name = "step_until_method_change",
+            description = "Step over repeatedly until the current method changes (or budget exhausted), " +
+                "then return a fresh frame_snapshot. Saves the agent from issuing 50 step_over calls in " +
+                "a `:walk` sequence — the server enforces method-change detection precisely. " +
+                "Returns: `snapshot` (after the change), `steps_taken`, `prior_method`, optional " +
+                "`step_budget_exhausted: true` if `max_steps` ran out without a change. " +
+                "Errors `vm_running` if not paused.",
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    put("thread_id", buildJsonObject {
+                        put("type", "integer")
+                        put(
+                            "description",
+                            "Optional thread to step on. Defaults to the currently paused thread.",
+                        )
+                    })
+                    put("max_steps", buildJsonObject {
+                        put("type", "integer")
+                        put("description", "Max step_over invocations before bailing. Default 30; max 500.")
+                    })
+                    put("skip_filters", buildJsonObject {
+                        put("type", "array")
+                        put(
+                            "description",
+                            "Additional class-exclusion patterns layered on top of the defaults " +
+                                "(java.*, android.*, kotlin.*, etc.).",
+                        )
+                    })
+                    put("snapshot_depth", buildJsonObject {
+                        put("type", "integer")
+                        put("description", "Frames in the returned snapshot. Default 5; max 30.")
+                    })
+                },
+            ),
+            toolAnnotations = ToolAnnotations(readOnlyHint = false, openWorldHint = false),
+        ) { request ->
+            runTool {
+                val vm = Session.requireAttached()
+                val args = request.arguments
+                val maxSteps = ((args?.get("max_steps") as? JsonPrimitive)?.intOrNull ?: 30)
+                    .coerceIn(1, 500)
+                val skipFilters = (args?.get("skip_filters") as? JsonArray)
+                    ?.mapNotNull { it.jsonPrimitive.contentOrNull }
+                    ?: emptyList()
+                val snapshotDepth = ((args?.get("snapshot_depth") as? JsonPrimitive)?.intOrNull ?: 5)
+                    .coerceIn(1, 30)
+                val explicitThreadId = (args?.get("thread_id") as? JsonPrimitive)?.longOrNull
+                val thread = if (explicitThreadId != null) {
+                    vm.allThreads().firstOrNull { it.uniqueID() == explicitThreadId }
+                        ?: throw ToolError(ErrorCode.InvalidTarget, "Thread $explicitThreadId not found.")
+                } else {
+                    Session.requirePaused()
+                }
+                if (!thread.isSuspended) {
+                    throw ToolError(
+                        errorCode = ErrorCode.VmRunning,
+                        message = "Thread ${thread.uniqueID()} is not suspended.",
+                        hint = "step_until_method_change requires a paused thread.",
+                    )
+                }
+
+                val priorMethod = currentMethodOf(thread)
+                    ?: throw ToolError(
+                        errorCode = ErrorCode.InvalidTarget,
+                        message = "Could not read current method on thread ${thread.uniqueID()}.",
+                    )
+
+                var stepsTaken = 0
+                while (stepsTaken < maxSteps) {
+                    // Issue a single-step + await its StepEvent, mirroring registerStep's loop.
+                    val req = Stepper.startStep(
+                        vm = vm,
+                        thread = thread,
+                        depth = Stepper.Depth.Over,
+                        extraSkipFilters = skipFilters,
+                        disableDefaultFilters = false,
+                    )
+                    Session.bumpVmStateVersion()
+                    Session.pausedThread = null
+                    Session.state = SessionState.ATTACHED_RUNNING
+                    try {
+                        vm.resume()
+                    } catch (t: Throwable) {
+                        Stepper.dispose(vm, req)
+                        throw t
+                    }
+                    val event = awaitEvent(STEP_AWAIT_MS) { e ->
+                        e is DebugEvent.Stopped && e.reason == "step" && e.threadId == thread.uniqueID()
+                    }
+                    Stepper.dispose(vm, req)
+                    if (event == null) {
+                        throw ToolError(
+                            errorCode = ErrorCode.Internal,
+                            message = "step_until_method_change: a step did not complete within ${STEP_AWAIT_MS}ms.",
+                            hint = "The thread may be blocked or the VM disconnected. Try wait_for_event.",
+                        )
+                    }
+                    Session.pausedThread = thread
+                    Session.state = SessionState.ATTACHED_PAUSED
+                    stepsTaken++
+                    val nowMethod = currentMethodOf(thread)
+                    if (nowMethod != null && nowMethod != priorMethod) {
+                        // Method changed — return a fresh snapshot of the new frame.
+                        val snapshot = SnapshotBuilder().build(
+                            thread,
+                            snapshotDepth,
+                            event = "STEP",
+                            pausedReason = "step_until_method_change",
+                        )
+                        return@runTool toolOk {
+                            put("snapshot", snapshot.toJson())
+                            put("steps_taken", stepsTaken)
+                            put("prior_method", priorMethod)
+                            put("vm_state_version", Session.vmStateVersion.get())
+                        }
+                    }
+                }
+                // Budget exhausted — return a snapshot of where we ended up + the flag.
+                val snapshot = SnapshotBuilder().build(
+                    thread,
+                    snapshotDepth,
+                    event = "STEP",
+                    pausedReason = "step_budget_exhausted",
+                )
+                toolOk {
+                    put("snapshot", snapshot.toJson())
+                    put("steps_taken", stepsTaken)
+                    put("prior_method", priorMethod)
+                    put("step_budget_exhausted", true)
+                    put("vm_state_version", Session.vmStateVersion.get())
+                }
+            }
+        }
+    }
+
+    /** Read `<class>.<method>` for the top frame of [thread] or `null` if unavailable. */
+    private fun currentMethodOf(thread: ThreadReference): String? = runCatching {
+        val loc = thread.frame(0).location()
+        "${loc.declaringType().name()}.${loc.method().name()}"
+    }.getOrNull()
 
     private fun registerStep(server: Server, name: String, depth: Stepper.Depth, description: String) {
         server.addTool(

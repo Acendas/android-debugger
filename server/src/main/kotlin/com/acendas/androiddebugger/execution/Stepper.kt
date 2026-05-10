@@ -1,5 +1,6 @@
 package com.acendas.androiddebugger.execution
 
+import com.acendas.androiddebugger.inspection.FrameworkFrames
 import com.sun.jdi.ThreadReference
 import com.sun.jdi.VirtualMachine
 import com.sun.jdi.request.EventRequest
@@ -18,19 +19,11 @@ object Stepper {
      * dump us into AOSP innards on every invocation. The agent can override via
      * `extra_skip_filters` on the tool; pass `disable_default_filters: true` to drop
      * these entirely (rare — only useful when intentionally stepping into kotlin.* code).
+     *
+     * Per BR-03: sourced from [FrameworkFrames.PREFIX_GLOBS] so the framework-prefix
+     * list is canonical across the capability heuristic, step exclusions, and BR-01.
      */
-    val DEFAULT_EXCLUSIONS: List<String> = listOf(
-        "java.*",
-        "javax.*",
-        "sun.*",
-        "android.*",
-        "androidx.*",
-        "kotlin.*",
-        "kotlinx.*",
-        "com.android.*",
-        "dalvik.*",
-        "libcore.*",
-    )
+    val DEFAULT_EXCLUSIONS: List<String> = FrameworkFrames.PREFIX_GLOBS
 
     enum class Depth(val jdi: Int) {
         Over(StepRequest.STEP_OVER),

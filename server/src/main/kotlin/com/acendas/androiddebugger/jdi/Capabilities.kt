@@ -1,5 +1,6 @@
 package com.acendas.androiddebugger.jdi
 
+import com.acendas.androiddebugger.inspection.FrameworkFrames
 import com.sun.jdi.AbsentInformationException
 import com.sun.jdi.VirtualMachine
 import kotlinx.serialization.json.JsonObject
@@ -48,13 +49,12 @@ object Capabilities {
      * Returns `true` if &gt;80% of sampled classes have stripped locals.
      */
     fun isLikelyReleaseBuild(vm: VirtualMachine): Boolean {
-        val frameworkPrefixes = setOf(
-            "java.", "javax.", "android.", "androidx.", "kotlin.", "kotlinx.",
-            "com.sun.", "sun.", "jdk.", "dalvik.", "libcore.", "com.android.",
-        )
+        // Per BR-03: framework-prefix list is centralized in FrameworkFrames so the
+        // capability heuristic, the step-class exclusion filters, and BR-01's
+        // exception_summary all agree on what counts as "framework code".
         val sample = vm.allClasses()
             .asSequence()
-            .filter { type -> frameworkPrefixes.none { type.name().startsWith(it) } }
+            .filter { type -> !FrameworkFrames.isFramework(type.name()) }
             .take(50)
             .toList()
         if (sample.isEmpty()) return false

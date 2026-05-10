@@ -23,16 +23,11 @@ If the goal is unclear, you have **one** chance to ask via `AskUserQuestion`. Do
 
 ## The four-shape triage
 
-Classify the goal into one shape and run the matching loop:
-
-| Shape | Trigger words | Loop |
-|---|---|---|
-| **Crash** | "crash", "NPE", "exception", "throws", a stack trace, "fatal" | exception-breakpoint loop |
-| **Behavior** | "doesn't work", "wrong value", "should do X but does Y", "find when X gets called", "trace this" | breakpoint-or-logpoint repro loop |
-| **Flaky test** | "flaky", "1 in N runs", "intermittent", "sometimes fails" | instrumented-test bisect loop |
-| **Onboarding** | "walk me through", "explain how X works", "show me what happens when…" | guided-step walk loop |
+Read `skills/investigate/references/four-shape-triage.md` for the four-shape triage table — single source of truth shared with `/android-debugger:investigate`. Classify the goal into one shape using the rules in that file (including disambiguation order and the Behavior sub-shapes), then run the matching loop below: `crash` → crash loop, `behavior` → behavior loop, `flaky` → flaky-test bisect loop, `onboarding` → walk loop.
 
 ## Common preflight (every shape)
+
+If the dispatch prompt contains the marker `[orchestrator note: session is attached to <package> on <serial>; skip preflight]`, trust it and skip step 1's `connection_status` + attach round-trip. The dispatching skill already confirmed the session is live; re-running is wasted tool calls.
 
 1. Call `mcp__android-debugger__connection_status`. If not attached, attach:
    - `mcp__android-debugger__list_devices` — pick the unique device, or ask once if many.
@@ -41,7 +36,7 @@ Classify the goal into one shape and run the matching loop:
 
 2. **Round-budget self-discipline.** Cap your investigation at **30 tool-call rounds** total before stopping to report. Don't run forever. The MCP server doesn't enforce this externally — it's on you. **After every 5–10 tool calls, pause and self-assess:** count the calls you've made so far, restate the current hypothesis, decide whether you're converging or stalling. At 30 calls, stop and return what you have, even if inconclusive — recommend the user run an interactive `:investigate`. Better a partial report than 80 rounds of drift.
 
-3. **Don't mutate the running app.** `evaluate` is allowed for value reads. Refuse method calls that **modify state**: setters (`set*`), mutators (`*Reset`, `clear`, `delete*`, `apply`, `commit`, `add`, `remove`, `put*`, `update*`), Editor-style commits on `SharedPreferences`, `Cursor.close`, `OutputStream.write`. The list isn't exhaustive — when in doubt, **ask the user before invoking any non-getter method on a non-collection value** (collection methods like `.size()`, `.get(i)`, `.isEmpty()` are read-only and fine). False positives like `getCleared()` are allowed because the `get` prefix indicates a read; trust naming conventions but escalate ambiguity to the user. The agent is best-effort here; the user is the safety net.
+3. **Don't mutate the running app.** Read `skills/explain/references/anti-hallucination.md` and apply the snapshot-grounding + evaluate-safety rules — including the mutator-method prefix list (`set*`, `*Reset`, `clear`, `delete*`, `apply`, `commit`, `add`, `remove`, `put*`, `update*`), the read-allowed list (collection accessors, framework `toString`), and the catch-all escalation rule ("ask before any non-getter method on a non-collection value"). The agent is best-effort here; the user is the safety net. The reference file is canonical and shared with every capability skill — when the rules update, both surfaces track.
 
 ## Per-shape loops
 
@@ -50,8 +45,8 @@ Classify the goal into one shape and run the matching loop:
 1. Resolve the exception class. If user gave a name → fully qualify (prepend `java.lang.` for short common names; otherwise treat as fully qualified). If none → `add_exception_breakpoint({ caught: false, uncaught: true })` to catch all.
 2. Tell the user via your report-of-progress (returned mid-flight as text) what to do: "Reproduce the crash now."
 3. `wait_for_event({ timeout_ms: 90000, types: ["exception"] })`. If timed out twice, give up and report "could not reproduce".
-4. On hit: `frame_snapshot({ depth: 10 })`. The exception is captured; its message + stack trace are in the snapshot's frames.
-5. Identify the **throw site** (top frame) and the **trigger frame** (first user-code frame, skipping framework `<init>` boilerplate). Look at locals at the trigger frame for the load-bearing fact (null parameter, wrong state).
+4. On hit: `frame_snapshot({ depth: 10 })` for full context, then `exception_summary({ ref: <exception_id from the event> })` for the structured root-cause data — `{ exception_class, message, throw_site, trigger_frame, cause_chain, stack_summary }`. Don't reassemble these by hand; the tool already does the framework-frame skip and cause-chain walk.
+5. Look at the trigger-frame locals from the snapshot for the load-bearing fact (null parameter, wrong state).
 6. Use `evaluate` to confirm any value claim before reporting it. Never guess.
 7. Iterate if necessary (e.g., need to inspect a referrer chain). Cap at the round budget.
 8. Compose the final report.
@@ -80,7 +75,7 @@ Classify the goal into one shape and run the matching loop:
 ### Onboarding (walk) loop
 
 1. Resolve the entry point. `add_line_breakpoint({ file, line })`. Prompt the user to trigger.
-2. `wait_for_event` → snapshot. Narrate the entry frame in 1–2 sentences.
+2. `wait_for_event` → snapshot. Narrate the entry frame in 1–2 sentences. Then drive the walk via `step_until_method_change({ max_steps: 30 })` — the server loops `step_over` internally until the current method changes, so you get one snapshot per method without manually checking method-name parity. Fall back to `step_over` / `step_into` only for single-step granularity or explicit drill-in.
 3. `step_over` repeatedly (default — most readable). `step_into` only when the next call is clearly the interesting one (e.g., `repository.signIn(...)` in a "login flow" goal).
 4. Narrate **only** when the method changes. Don't narrate every line within the same method.
 5. The server enforces a step budget (50 same-method steps) — if it kicks in, surface the suggestion verbatim.
@@ -89,8 +84,7 @@ Classify the goal into one shape and run the matching loop:
 
 ## What to NEVER do
 
-- **Never invent values.** If you'd say "x is 5" — `evaluate` it first. Anti-hallucination rules from `:explain` apply doubly here, since the user isn't seeing each snapshot.
-- **Never mutate state with `evaluate`.** Setters, clears, resets, deletes are out of scope unless the user explicitly asks. The target app's data is theirs.
+- **Anti-hallucination + evaluate-safety:** apply the rules from `skills/explain/references/anti-hallucination.md` (canonical) — they apply doubly here since the user isn't seeing each snapshot. If you'd say "x is 5", `evaluate` it first; never invoke a mutating method without escalating to the user.
 - **Never run the app's destructive actions on their behalf.** "Tap delete account to reproduce" is a user action; you describe what to tap, you don't drive the device.
 - **Never claim you ran a smoke test you didn't actually run.** Honesty about uncertainty beats confident guessing.
 - **Never skip detach.** When the investigation concludes, unless the user hands the session back to interactive mode, leave the session attached so the user can drill in further. If the user's goal said "and detach when done", call `mcp__android-debugger__detach` at the end.

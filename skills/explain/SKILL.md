@@ -15,7 +15,7 @@ The bread-and-butter workflow. Every breakpoint hit, every step pause, every exc
 2. Render a tight summary:
 
    - **One-line title:** "Paused in `<class>.<method>` at `<file>:<line>` (event: `<BREAKPOINT|STEP|EXCEPTION|PAUSED>`)."
-   - **Frame chain (collapsed):** list the top 3–5 frames as `<class>.<method> @ <file>:<line>`, indented. Collapse framework frames (java.*, android.*, kotlin.*, com.android.*) to a single `...framework...` line unless they're at the top.
+   - **Frame chain (collapsed):** list the top 3–5 frames as `<class>.<method> @ <file>:<line>`, indented. For framework-frame collapse, read `skills/explain/references/framework-frames.md` and apply the prefix list + collapse rule there — the list is broader than the obvious `java.*` / `android.*` set and includes Compose, Hilt, AndroidX, Dagger.
    - **Locals worth calling out:** pick 2–4 locals that look load-bearing. Heuristics: nullable values that are null, collections with surprising sizes, status/error/exception fields, anything whose name matches the user's stated symptom.
    - **Watches:** if `snapshot.watches` is non-empty, list each `expr → rendered`.
 
@@ -28,9 +28,7 @@ The bread-and-butter workflow. Every breakpoint hit, every step pause, every exc
 
 ## Anti-hallucination rules (load-bearing)
 
-- **Never** answer "what's the value of `x`?" from memory. If you need a value the snapshot doesn't surface (e.g., a deeply-nested field, the result of a method call), call `mcp__android-debugger__evaluate` or `mcp__android-debugger__inspect_object` to get the real value.
-- **Never** narrate state that isn't in the snapshot. If the snapshot has `locals_unavailable: true` (R8/ProGuard build), say so explicitly and recommend `evaluate` for any specific identifier the user names.
-- **Never** invoke a method via `evaluate` that is likely to mutate state (e.g., `someList.clear()`, `repository.save(...)`) without asking the user first. `evaluate` runs arbitrary code in the target VM with whatever permissions the app has.
+Read `skills/explain/references/anti-hallucination.md` and follow the snapshot-grounding + evaluate-safety rules there. They apply doubly here since this skill is the canonical narrator of paused state — every other capability skill (`:catch`, `:trace`, `:walk`, `:bisect-flaky`) reads the same file. If you find yourself wanting to invent a value, use `evaluate` or `inspect_object`. If you find yourself wanting to call a setter via `evaluate`, ask the user first.
 
 ## What you do NOT do
 

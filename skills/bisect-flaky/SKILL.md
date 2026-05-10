@@ -1,6 +1,6 @@
 ---
 name: Bisect a flaky test
-description: This skill should be used when the user asks "this test fails 1 in 10 times", "bisect this flaky test", "narrow down a flaky failure", "why does this test sometimes fail", "find the trigger for the flake", or runs `/android-debugger:bisect-flaky`. Loops a flaky instrumented test until both pass and fail are observed, captures state at the divergence point with conditional breakpoints, narrows down the trigger, proposes a hypothesis.
+description: This skill should be used when the user asks "this test fails 1 in 10 times", "bisect this flaky test", "narrow down a flaky failure", "why does this test sometimes fail", "find the trigger for the flake", "this test is busted half the time", "sometimes the test fails on CI but works locally", "test is being weird", "TestX flaked again", "intermittent CI failure on TestY", "passes locally fails on CI", or runs `/android-debugger:bisect-flaky`. Loops a flaky instrumented test until both pass and fail are observed, captures state at the divergence point with conditional breakpoints, narrows down the trigger, proposes a hypothesis.
 argument-hint: "<test class.method>"
 allowed-tools: Read, Grep, mcp__android-debugger__connection_status, mcp__android-debugger__attach, mcp__android-debugger__detach, mcp__android-debugger__add_exception_breakpoint, mcp__android-debugger__add_line_breakpoint, mcp__android-debugger__list_breakpoints, mcp__android-debugger__remove_breakpoint, mcp__android-debugger__wait_for_event, mcp__android-debugger__frame_snapshot, mcp__android-debugger__evaluate, mcp__android-debugger__resume, mcp__android-debugger__tail_logcat, mcp__android-debugger__read_logcat
 ---
@@ -13,24 +13,23 @@ The loop is human-in-the-loop: Claude orchestrates the breakpoints + analysis; t
 
 ## What you do
 
+0. **Preflight: is this actually bisectable?** Read `skills/bisect-flaky/references/flake-trigger-heuristics.md` and apply its timing-flake signature checklist *before* setting any breakpoints. Breakpoints can capture state at a chosen line but they can't capture *timing windows* — `IdlingResource` starvation, GC pauses, `Dispatchers.Default` mixing, system-clock drift produce flakes whose root cause is "the window closed", not "this line had the wrong value". Setting a bp on a timing-window flake usually *closes* the window (the bp itself slows execution), and the test stops failing under the debugger. If the symptom matches a timing signature, route to the file's logpoint-sweep fallback instead — place logpoints across timing-sensitive entries and harvest the timeline across 10–20 runs. If no timing signature matches, continue with the bisect loop below.
+
 1. Call `mcp__android-debugger__connection_status`. If attached, ask the user to detach first (the test runner attaches debug-wait — we'll re-attach to the test PID).
 
 2. **Resolve the test target.** The user provides `<class>.<method>` or just the class. Grep the user's project to confirm the test class file path; warn if not found.
 
-3. **Identify likely flake roots** in the test:
-   - The assertion line(s) in the test method (where the failure surfaces).
-   - Calls in the system-under-test that involve: shared state, `TimeUnit.MILLISECONDS.sleep`, coroutine `delay()`, network/IO, random, system clock, threading primitives.
-   - Aim for 3–5 candidate breakpoint sites, ranked by likelihood.
+3. **Identify likely flake roots** using the ranked candidate-pattern list in `skills/bisect-flaky/references/flake-trigger-heuristics.md`. Match the highest-ranked patterns first (shared mutable state → `delay()`/`sleep()` → `Dispatchers.Default` mixing → wall-clock reads → IdlingResource starvation → multi-process SharedPreferences → RxJava scheduler mixing). Pick 3–5 candidate breakpoint sites that match the highest-ranked patterns; do not invent candidates that aren't in the list — flake roots come from a known set of patterns and unbounded LLM judgment produces low-precision picks.
 
 4. **Tell the user how to run the test in debug-wait mode.** Provide a concrete command they can paste — cross-platform (works on macOS / Linux / Windows shells with `adb` on PATH):
 
    ```
-   adb shell am instrument -w -e debug true \
-     -e class <fully.qualified.test.Class>#<method> \
-     <test.package>/<runner.fully.qualified>
+   adb shell am instrument -w -e debug true -e class <fully.qualified.test.Class>#<method> <test.package>/<runner.fully.qualified>
    ```
 
    The runner waits for the debugger to attach. Tell them the PID will appear in the output as `Waiting for debugger`.
+
+   **If the user doesn't know the runner FQN**, point them at the AGP-built manifest: `app/build/intermediates/manifest_merge_blame_file/androidTest*/AndroidManifest.xml` — look for `<instrumentation android:name="..."/>`. Default modern AGP value is `androidx.test.runner.AndroidJUnitRunner`; Hilt-using projects often have a custom runner. If the merged-manifest directory is missing, suggest `./gradlew :app:processDebugAndroidTestManifest` to produce it. (See `skills/bisect-flaky/references/flake-trigger-heuristics.md` for the full hint.)
 
 5. **Walk the user through the loop:**
    - **Round N:** User launches the test → it pauses waiting for debugger → user runs `/android-debugger:attach <pid>` → control comes back here.
@@ -51,11 +50,12 @@ The loop is human-in-the-loop: Claude orchestrates the breakpoints + analysis; t
    - Propose a fix shape (e.g., "the cache isn't being cleared between tests; add `@After cache.clear()`" or "the assertion races against an async write; use `runTest { advanceUntilIdle() }`").
    - Cleanup: `remove_breakpoint` for every id in `list_breakpoints`. Detach.
 
-## Anti-hallucination
+## Anti-hallucination rules
 
-- **Never** claim a divergent local without grounding in two captured snapshots — quote the actual values (`pass-1: counter=10` vs. `fail-3: counter=11`). The flake hypothesis must point at a real, observed difference.
-- **Never** propose a fix until you've captured ≥1 pass and ≥1 fail. If you can't reproduce the failure within 10 rounds, surface that honestly: "ran 10 iterations, all passed — couldn't observe the flake; recommend more aggressive test seeding or a different breakpoint set."
-- **Never** evaluate methods that may mutate state during the loop (setters, `clear()`, `reset()`, repository writes). Read paths only.
+Read `skills/explain/references/anti-hallucination.md` and follow the snapshot-grounding + evaluate-safety rules there. The flake-loop has two extra grounding requirements specific to this skill:
+
+- **Never** claim a divergent local without grounding in **two** captured snapshots — quote the actual values (`pass-1: counter=10` vs. `fail-3: counter=11`). The flake hypothesis must point at a real, observed difference, not a claimed one.
+- **Never** propose a fix until you've captured ≥1 pass and ≥1 fail. If you can't reproduce the failure within 10 rounds, surface that honestly: "ran 10 iterations, all passed — couldn't observe the flake; recommend more aggressive test seeding, a different breakpoint set, or routing to logpoint sweep per the timing-flake preflight."
 
 ## What you do NOT do
 

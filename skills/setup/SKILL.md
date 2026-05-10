@@ -1,6 +1,6 @@
 ---
 name: Setup android-debugger
-description: This skill should be used when the user asks to "setup android debugger", "init android debugger", "configure android debugger", "check android debugger environment", "verify java and adb", "android debugger isn't working", or runs `/android-debugger:setup`. Probes the user's environment for JDK + adb, verifies the MCP server is reachable, and reports what's missing with platform-specific (macOS/Linux/Windows) install hints. Run once after install, and any time the debugger reports "adb not found" or fails to start.
+description: This skill should be used when the user asks to "setup android debugger", "init android debugger", "configure android debugger", "check android debugger environment", "verify java and adb", "android debugger isn't working", "command failed: java", "plugin won't start", "server_info returns nothing", "adb not found", "the debugger seems broken", or runs `/android-debugger:setup`. Probes the user's environment for JDK + adb, verifies the MCP server is reachable, and reports what's missing with platform-specific (macOS/Linux/Windows) install hints. Run once after install, and any time the debugger reports "adb not found" or fails to start.
 allowed-tools: Bash, mcp__android-debugger__server_info, mcp__android-debugger__list_devices
 ---
 
@@ -17,10 +17,7 @@ The first thing to run after install. Also the diagnostic to fall back to whenev
    - **JDK missing or too old**: minimum JDK 17. Run `java -version` via Bash to confirm.
    - **`.mcp.json` not loaded**: ask the user to restart Claude Code.
 
-3. If `server_info` returns `adb_status: "not_found"`, do not silently proceed. Print the exact resolution the server tried (ADB_PATH → ANDROID_HOME → PATH) and give one platform-specific hint:
-   - **macOS**: `brew install --cask android-platform-tools` or set `ANDROID_HOME=$HOME/Library/Android/sdk`.
-   - **Linux**: `apt install android-tools-adb` (Debian/Ubuntu) or set `ANDROID_HOME=$HOME/Android/Sdk`.
-   - **Windows**: install Android Studio (bundles platform-tools) or download standalone `platform-tools` from `https://developer.android.com/tools/releases/platform-tools`, then add to PATH or set `ANDROID_HOME`.
+3. If `server_info` returns `adb_status: "not_found"`, do not silently proceed. Print the exact resolution the server tried (ADB_PATH → ANDROID_HOME → PATH) and give one platform-specific hint. Read `skills/setup/references/install-hints.md` for the platform-specific install commands and `ANDROID_HOME` / `ADB_PATH` env-var guidance — surface only the hint relevant to the user's `os_name` (don't dump the whole reference). Same applies to JDK install hints if `jdk_version` is missing or below 17.
 
 4. If both server and adb are reachable, call `mcp__android-debugger__list_devices` to confirm at least one device or emulator is connected. Do **not** start an emulator on the user's behalf — they may have a specific AVD they want; just point them at how to start one if no devices are listed.
 
@@ -33,7 +30,7 @@ The first thing to run after install. Also the diagnostic to fall back to whenev
    devices:      1 connected (Pixel_Tablet)
    ```
 
-6. If `server_info`'s response includes a `capabilities` map (it doesn't today, but `attach` does), and the user later attaches, recommend they run `/android-debugger:status` to see the per-device capability matrix that ART exposes.
+6. After reporting, if the user is ready to attach, recommend `/android-debugger:attach` — its response carries the per-device JDI capability map (whose flags depend on the ART version on the connected device). `:status` will surface that map after attachment.
 
 ## What you do NOT do
 

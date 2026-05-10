@@ -1,7 +1,7 @@
 ---
 name: android-debugger status
 description: This skill should be used when the user asks "what's the debugger status", "is android-debugger connected", "show debug session", "am I attached", "list active breakpoints", or runs `/android-debugger:status`. Reports the current debug session — server reachability, attached process, paused/running state, breakpoint and watch counts. Cheap read-only summary; never blocks on a paused VM. For "why did we stop here" / "what's happening at this pause", route to `/android-debugger:explain` instead — that's the post-pause hypothesis tool.
-allowed-tools: mcp__android-debugger__connection_status, mcp__android-debugger__list_threads
+allowed-tools: mcp__android-debugger__connection_status, mcp__android-debugger__list_threads, mcp__android-debugger__render_capabilities
 ---
 
 # Status — current debugger session at a glance
@@ -29,6 +29,8 @@ A read-only one-pager. Don't change anything; don't probe the user's machine. Ju
    attached:   no
    state:      UNATTACHED
    ```
+
+   **`since_ms` rendering rule:** if `since_ms` is present and within a sane range (0 to 86400000ms / 24h), render as a humanized duration (`12s`, `4m 30s`, `1h 12m`). If `since_ms` is null, missing, negative, or absurd (>86400000ms — clock skew, server bug), render the raw `attached_at` ISO timestamp instead (`since 2025-05-09T18:31:22Z`). Never render a nonsense value like `since -2147483648s` or `since 3987d`.
 
 3. If `state == ATTACHED_PAUSED`, optionally call `mcp__android-debugger__list_threads` and surface the count of suspended threads + the name of the paused thread (the one carrying the user's code, usually `main`). This helps the user remember "right, we're paused at a breakpoint."
 

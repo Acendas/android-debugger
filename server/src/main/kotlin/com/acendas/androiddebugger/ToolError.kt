@@ -24,6 +24,13 @@ enum class ErrorCode(val code: String) {
     AdbError("adb_error"),
     AttachFailed("attach_failed"),
     VmDisconnected("vm_disconnected"),
+    /**
+     * Per BR-02: the resolved JDI method name looks like a state mutator
+     * (`set*`, `clear*`, `apply`, etc.) and the caller did not pass
+     * `allow_mutation: true`. Read-only inspection is the default; the agent must
+     * opt in explicitly to invoke methods that change app state.
+     */
+    VmMutationRefused("vm_mutation_refused"),
     Internal("internal"),
 }
 

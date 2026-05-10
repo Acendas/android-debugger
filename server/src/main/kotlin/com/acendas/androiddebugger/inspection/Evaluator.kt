@@ -54,12 +54,19 @@ object Evaluator {
     /**
      * Evaluate a parsed [Expr] in the context of [thread]/[frameIdx]. Returns the
      * resolved JDI [Value] (which the caller renders via [ValueRenderer]).
+     *
+     * Per BR-02: any method call inside the expression that resolves to a name matching
+     * the mutator pattern (`set*`, `clear`, `reset`, `apply`, `commit`, etc.) is
+     * refused with [ErrorCode.VmMutationRefused] unless [allowMutation] is `true`.
+     * The default is `false` because the inspect path should never mutate app state
+     * by accident — the rule used to live in three skill bodies and routinely drifted.
      */
     fun evaluate(
         thread: ThreadReference,
         frameIdx: Int,
         expr: Expr,
         timeoutMs: Long = DEFAULT_TIMEOUT_MS,
+        allowMutation: Boolean = false,
     ): Value? {
         if (!busy.compareAndSet(false, true)) {
             // Re-entry from a different coroutine while a previous eval is in flight.
@@ -79,7 +86,7 @@ object Evaluator {
             runBlocking {
                 mutex.withLock {
                     withTimeout(timeoutMs) {
-                        evalInner(thread, frameIdx, expr)
+                        evalInner(thread, frameIdx, expr, allowMutation)
                     }
                 }
             }
@@ -93,7 +100,8 @@ object Evaluator {
      * bypassing the parser. Args are JDI [Value]s, prepared by the caller (typically
      * literals via [boxLiteral] and refs via [ObjectIdMint]).
      *
-     * Same single-flight discipline as [evaluate].
+     * Same single-flight discipline as [evaluate]. Per BR-02: refuses mutator-named
+     * methods unless [allowMutation] is `true`.
      */
     fun invokeRaw(
         thread: ThreadReference,
@@ -102,6 +110,7 @@ object Evaluator {
         methodName: String,
         args: List<Value?>,
         timeoutMs: Long = DEFAULT_TIMEOUT_MS,
+        allowMutation: Boolean = false,
     ): Value? {
         if (!busy.compareAndSet(false, true)) {
             throw ToolError(
@@ -114,7 +123,7 @@ object Evaluator {
             runBlocking {
                 mutex.withLock {
                     withTimeout(timeoutMs) {
-                        invokeRawInner(thread, frameIdx, target, methodName, args)
+                        invokeRawInner(thread, frameIdx, target, methodName, args, allowMutation)
                     }
                 }
             }
@@ -123,9 +132,54 @@ object Evaluator {
         }
     }
 
+    /**
+     * Per BR-02: refusal pattern for method names that look like state mutators.
+     *
+     * Matches:
+     *   - `^(set|clear|delete|remove|add|put|update|reset|apply|commit|insert|drop|
+     *      destroy|invalidate|cancel)[A-Z_].*` — `setName`, `clear_cache`, etc.
+     *   - The bare names `apply` / `commit` / `clear` / `reset`.
+     *
+     * Does **not** match:
+     *   - Names ending in `OrThrow` — `setOrThrow` is allowed because the suffix is a
+     *     read-validation idiom in the project's coding style. (The exception class
+     *     here is the one the v1.1.1 review explicitly carved out.)
+     */
+    fun isLikelyMutator(methodName: String): Boolean {
+        // Bare-name allow-list of reads named like mutators is empty for now; if a
+        // codebase has e.g. `Map.clearStrategy` (a getter), the agent passes
+        // `allow_mutation: true` to override.
+        if (methodName.endsWith("OrThrow")) return false
+        val bareMutators = setOf("apply", "commit", "clear", "reset")
+        if (methodName in bareMutators) return true
+        // Prefix + camelCase boundary or underscore. Anchored by `^` and `[A-Z_].*`
+        // so `setting` (no boundary) doesn't match while `setName` and `set_name` do.
+        return MUTATOR_REGEX.matches(methodName)
+    }
+
+    private val MUTATOR_REGEX: Regex = Regex(
+        "^(set|clear|delete|remove|add|put|update|reset|apply|commit|insert|drop|destroy|invalidate|cancel)[A-Z_].*",
+    )
+
+    /**
+     * Throw [ErrorCode.VmMutationRefused] for [methodName] / [className] unless
+     * the caller passed `allow_mutation: true`. Per BR-02.
+     */
+    private fun refuseIfMutator(methodName: String, className: String, allowMutation: Boolean) {
+        if (allowMutation) return
+        if (!isLikelyMutator(methodName)) return
+        throw ToolError(
+            errorCode = ErrorCode.VmMutationRefused,
+            message = "$methodName looks like a state mutator. " +
+                "Pass `allow_mutation: true` if you actually want to invoke it.",
+            hint = "Read-only inspection is the default; mutators need explicit consent.",
+            currentState = "$className.$methodName",
+        )
+    }
+
     // ---------------- internal ----------------
 
-    private fun evalInner(thread: ThreadReference, frameIdx: Int, expr: Expr): Value? {
+    private fun evalInner(thread: ThreadReference, frameIdx: Int, expr: Expr, allowMutation: Boolean): Value? {
         if (!thread.isSuspended) {
             throw ToolError(
                 errorCode = ErrorCode.VmRunning,
@@ -141,7 +195,7 @@ object Evaluator {
                 message = "Frame $frameIdx out of range on thread ${thread.uniqueID()}.",
             )
         }
-        return resolve(thread, frame, expr)
+        return resolve(thread, frame, expr, allowMutation)
     }
 
     private fun invokeRawInner(
@@ -150,6 +204,7 @@ object Evaluator {
         target: String,
         methodName: String,
         args: List<Value?>,
+        allowMutation: Boolean,
     ): Value? {
         if (!thread.isSuspended) {
             throw ToolError(
@@ -166,6 +221,9 @@ object Evaluator {
                 errorCode = ErrorCode.InvalidTarget,
                 message = "Frame has no `this` (static method or top-level frame).",
             )
+            // Per BR-02: refuse mutators *before* dispatching to the resolver so the
+            // refusal message names the receiver class (handy for the agent).
+            refuseIfMutator(methodName, receiver.referenceType().name(), allowMutation)
             invokeOnObject(thread, receiver, methodName, args)
         } else {
             val type = Session.requireAttached().classesByName(target).firstOrNull()
@@ -173,6 +231,7 @@ object Evaluator {
             if (type !is ClassType) {
                 throw ToolError(ErrorCode.InvalidTarget, "Target `$target` is not a class.")
             }
+            refuseIfMutator(methodName, type.name(), allowMutation)
             invokeOnClass(thread, type, methodName, args)
         }
     }
@@ -180,21 +239,28 @@ object Evaluator {
     /**
      * Walk the AST. Identifiers resolve to a [Value]; method calls invoke; member access
      * reads a field on a receiver.
+     *
+     * Per BR-02: every method call site checks [refuseIfMutator] before dispatching, so
+     * a refused method aborts the whole expression instead of running side effects.
      */
-    private fun resolve(thread: ThreadReference, frame: StackFrame, expr: Expr): Value? = when (expr) {
+    private fun resolve(thread: ThreadReference, frame: StackFrame, expr: Expr, allowMutation: Boolean): Value? = when (expr) {
         is LitExpr -> boxLiteral(Session.requireAttached(), expr.value)
         is IdentExpr -> resolveIdentifier(frame, expr.name)
         is MemberExpr -> {
-            val receiver = resolve(thread, frame, expr.receiver)
+            val receiver = resolve(thread, frame, expr.receiver, allowMutation)
                 ?: throw ToolError(ErrorCode.InvalidTarget, "Cannot access `.${expr.member}` on null receiver.")
             readMember(receiver, expr.member)
         }
         is CallExpr -> {
-            val args = expr.args.map { resolve(thread, frame, it) }
+            val args = expr.args.map { resolve(thread, frame, it, allowMutation) }
             // CallExpr's receiver is always present (we synthesize IdentExpr("this") for bare calls).
-            val recv = resolve(thread, frame, expr.receiver)
+            val recv = resolve(thread, frame, expr.receiver, allowMutation)
             when {
-                recv is ObjectReference -> invokeOnObject(thread, recv, expr.method, args)
+                recv is ObjectReference -> {
+                    // Per BR-02: refuse before invokeMethod ever leaves Kotlin-land.
+                    refuseIfMutator(expr.method, recv.referenceType().name(), allowMutation)
+                    invokeOnObject(thread, recv, expr.method, args)
+                }
                 // Static method call would require a CastExpr to introduce a class; we don't support
                 // bare unqualified static names in v1. Use eval_method as the escape hatch.
                 else -> throw ToolError(
@@ -207,7 +273,7 @@ object Evaluator {
         is CastExpr -> {
             // We don't perform real conversion; the cast in JDI-eval terms is informational.
             // The inner value carries its own JDI type; method/member resolution uses runtime types.
-            resolve(thread, frame, expr.inner)
+            resolve(thread, frame, expr.inner, allowMutation)
         }
     }
 

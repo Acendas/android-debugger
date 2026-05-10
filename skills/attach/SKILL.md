@@ -1,8 +1,8 @@
 ---
 name: Attach to Android process
-description: This skill should be used when the user asks to "attach android debugger", "debug this android app", "attach to my app", "start debugging android", "connect to running app", or runs `/android-debugger:attach`. Lists debuggable processes on the connected device/emulator and attaches to one — `adb forward tcp:LOCAL jdwp:PID` then JDI attaches via SocketAttachingConnector. Holds the live VirtualMachine for the rest of the session until `/android-debugger:detach`.
-argument-hint: "[package-name | pid]"
-allowed-tools: mcp__android-debugger__list_devices, mcp__android-debugger__list_debuggable_processes, mcp__android-debugger__attach, mcp__android-debugger__connection_status
+description: This skill should be used when the user asks to "attach android debugger", "debug this android app", "attach to my app", "start debugging android", "connect to running app", "I'm waiting for debugger", "process is paused for jdwp", "claude can't see my app", "debugger waiting", "app is hanging on Waiting For Debugger", "the app froze on a debug-wait splash", or runs `/android-debugger:attach`. Lists debuggable processes on the connected device/emulator and attaches to one — `adb forward tcp:LOCAL jdwp:PID` then JDI attaches via SocketAttachingConnector. Holds the live VirtualMachine for the rest of the session until `/android-debugger:detach`.
+argument-hint: "[package | pid | partial-package]"
+allowed-tools: AskUserQuestion, mcp__android-debugger__list_devices, mcp__android-debugger__list_debuggable_processes, mcp__android-debugger__attach, mcp__android-debugger__connection_status, mcp__android-debugger__wait_for_event, mcp__android-debugger__render_capabilities
 ---
 
 # Attach — connect the debugger to a running Android process
@@ -17,10 +17,12 @@ The user has a debuggable APK on a device/emulator and wants Claude driving the 
 
 3. Call `mcp__android-debugger__list_debuggable_processes`. If `serial` is omitted and there's only one device, it's auto-selected. Multiple devices → the tool returns `code: invalid_target` with a candidate list — ask the user via `AskUserQuestion` and retry with the chosen serial.
 
-4. Resolve the target:
-   - If the user passed a numeric argument → match by `pid` and call `attach({ serial, pid })`.
-   - If the user passed a string → match by `package` against the process list. If exactly one matches, call `attach({ serial, package })`. If multiple, ask via `AskUserQuestion` showing each `{ pid, package }`.
-   - If no argument → present the (max 4) most-likely targets via `AskUserQuestion`. "Most likely" = packages that don't start with `com.android.` or `system`.
+4. Resolve the target. Parsing precedence (apply in this order — first match wins):
+   - **Numeric** (`/^\d+$/`) → match by `pid` against the process list and call `attach({ serial, pid })`.
+   - **`package/component` shape** (e.g. `com.example.app/com.example.app.MainActivity`) → split on `/`, take the part before the slash as the package, ignore the component (the user pasted from `am start` output).
+   - **Exact package match** → if the string matches a process `package` exactly, call `attach({ serial, package })`.
+   - **Partial / prefix match** → if the string matches one process's `package` as a prefix or substring (e.g. `com.example` matches `com.example.app`), and exactly one process matches, attach to that process. If multiple processes match, ask via `AskUserQuestion` showing each `{ pid, package }`.
+   - **No argument** → present the (max 4) most-likely targets via `AskUserQuestion`. "Most likely" = packages that don't start with `com.android.` or `system`.
 
 5. After `attach` returns:
    - Confirm with a one-liner: `attached to <package> (pid <pid>) via tcp:<jdwp_port>`.
@@ -31,7 +33,9 @@ The user has a debuggable APK on a device/emulator and wants Claude driving the 
      - `field_modification_watchpoints: false` → "field watchpoints unavailable"
    - If the response includes `warnings` and `release_build_likely` is present, surface that prominently — local-variable inspection will be mostly empty until they rebuild as a debug variant.
 
-6. Suggest the next step: "Describe the bug to investigate with `/android-debugger:investigate`" (catch-all router) "or jump straight to `/android-debugger:catch <exception>` if you already know what's crashing."
+6. **Smoke-probe the live VM.** Call `mcp__android-debugger__wait_for_event({ timeout_ms: 2000 })` to confirm the VM is actually live and producing events. JDWP forward can succeed while the VM is still in early boot (process freshly spawned, ART warming up, Wear OS quirk) and no events ever fire — the user perceives this as "the debugger is attached but Claude can't see anything." On timeout (`timed_out: true`), tell the user the VM hasn't produced any events yet and suggest either: (a) launch the app fresh from the home screen so the VM finishes initialization, (b) confirm the build is `debuggable=true` (release builds with manifest debuggable strip JDWP), (c) on Wear OS, double-check the AVD is API 30+. Don't mark this as a hard failure — many apps idle without events; surface it as "no events in 2s" and let the user decide.
+
+7. Suggest the next step: "Describe the bug to investigate with `/android-debugger:investigate`" (catch-all router) "or jump straight to `/android-debugger:catch <exception>` if you already know what's crashing."
 
 ## Cross-platform notes
 

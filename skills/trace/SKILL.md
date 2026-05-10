@@ -21,12 +21,14 @@ This is the highest-leverage workflow for ordering bugs, race conditions, and "I
    - Methods that WRITE the suspect value.
    - Aim for 5–10 instrumentation points across the call graph. More than 12 is noise.
 
+2.5. **Check whether the codepath is reactive before placing logpoints.** Modern Kotlin Android moves values through Flow operators, Compose recomposition, and suspend continuations — not method-call boundaries. Read `skills/trace/references/reactive-codepaths.md` and apply the recognition checklist there. If the codepath matches a reactive pattern (Flow/StateFlow, Compose, suspend functions), follow the per-shape strategy in that file (logpoint at every `emit` and `collect`, at `derivedStateOf`/`LaunchedEffect`, at suspending call sites — *not* at "writers" and "readers"). If no reactive signals match, fall through to the imperative writer/reader strategy below.
+
 3. **Confirm the BATCH** with one `AskUserQuestion` listing the proposed `(file:line)` set with a one-line label each. Do NOT ask per-logpoint — the user wants to confirm the recipe, not approve 10 things.
 
 4. **Place the logpoints.** For each `(file, line)`, call `mcp__android-debugger__add_line_breakpoint` with:
    - `file: <relative path>`
    - `line: <number>`
-   - `log_message: <template>` — use `{expr}` placeholders to inject local values, e.g. `"login.click user={user.id} pwLen={password.length()}"`. Keep templates short; the rendered values get appended to the log line.
+   - `log_message: <template>` — use `{expr}` placeholders to inject local values. **Never call non-trivial methods in a `log_message` template — read fields, not methods.** Method calls run in the target VM and `toString()` chains, lazy getters, and `equals`/`hashCode` implementations can mutate state. Only field reads (`{user.id}`, `{state.name}`) and trivial getters that match Java/Kotlin property convention (`{list.size}`, `{string.length}`, `{collection.isEmpty}`) are safe. Avoid `{password.length()}` (method call) — use `{password.length}` (Kotlin property accessor; resolves to the field). Custom `toString`, computed properties, and fluent builders are out of scope.
 
 5. **Start logcat tail** (if not already running) via `mcp__android-debugger__tail_logcat` filtering on the app's package + tag `debugger:logpoint`. Save the `buffer_id`.
 
@@ -34,7 +36,9 @@ This is the highest-leverage workflow for ordering bugs, race conditions, and "I
 
 7. **Wait for the user's signal** — they'll tell you they triggered it. (You can also poll `read_logcat` with a short interval.)
 
-8. **Harvest** via `mcp__android-debugger__read_logcat({ buffer_id })`. Render the timeline as a numbered list with timestamps:
+8. **Harvest** via `mcp__android-debugger__read_logcat({ buffer_id })`. **If `read_logcat` returns 0 logpoint entries** after the user reports a successful repro, conclude the breakpoint set didn't intersect the actual codepath — broaden the suspect graph (try the reactive recognition again if you skipped it; the path may have gone through a Flow operator), or confirm the repro by running `/android-debugger:explain` if the VM happened to pause at a non-logpoint event. Don't silently re-prompt the user to "try again" — empty logs are a meaningful signal that the recipe is wrong, not that the user mis-reproduced.
+
+   Render the timeline as a numbered list with timestamps:
 
    ```
    01  T+0ms     login.click user=u_42 pwLen=8
@@ -52,6 +56,10 @@ This is the highest-leverage workflow for ordering bugs, race conditions, and "I
 10. **Propose** the hypothesis + suggested next move (drill in with `:explain` at a specific bp, set a conditional breakpoint to capture state on the next failing iteration, or fix the obvious thing).
 
 11. **Cleanup.** Ask the user if they want to keep the logpoints (for further runs) or remove them. On confirm, call `remove_breakpoint` for each id from `list_breakpoints`. Stop the logcat buffer with `stop_logcat`.
+
+## Anti-hallucination rules
+
+Read `skills/explain/references/anti-hallucination.md` and follow the snapshot-grounding + evaluate-safety rules there. Apply them especially when reasoning over the harvested timeline — never claim a value appears in the timeline that doesn't, never claim a logpoint fired N times when the count is something else.
 
 ## What you do NOT do
 

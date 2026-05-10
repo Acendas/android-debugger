@@ -1,6 +1,6 @@
 ---
 name: Detach android-debugger
-description: This skill should be used when the user asks to "detach", "stop debugging android", "disconnect debugger", "end debug session", "close the debugger", or runs `/android-debugger:detach`. Releases the adb forward, disposes the JDI VirtualMachine, removes all event requests, and returns the app to a fully running state. Always run this when finished — abandoned attachments leave the app suspended on the next breakpoint hit.
+description: This skill should be used when the user asks to "detach", "stop debugging android", "disconnect debugger", "end debug session", "close the debugger", "kill the debugger", "stop", "I'm done", "exit debug", "bye debugger", "release the app", "wrap up the debug session", or runs `/android-debugger:detach`. Releases the adb forward, disposes the JDI VirtualMachine, removes all event requests, returns the app to a fully running state.
 allowed-tools: mcp__android-debugger__detach, mcp__android-debugger__connection_status
 ---
 
@@ -18,13 +18,7 @@ Always call this at the end of a session. Forgetting to detach can leave the app
 
 3. If the user wants to re-attach to the same app, point them at `/android-debugger:attach`.
 
-## What the server does under the hood (informational)
-
-- Calls `vm.dispose()` on the JDI `VirtualMachine` (NOT `vm.exit()` — `exit` would call `System.exit` in the target app and kill it; `dispose` cleanly disconnects).
-- Removes the `adb forward tcp:N jdwp:PID` so the local TCP port is released.
-- Resets the in-memory session state: clears breakpoints, watches, the snapshot cache.
-
-The target app **continues running** — JDWP doesn't kill the VM on transport loss, threads simply un-suspend.
+4. If the user asks why detach is safe ("won't this kill my app?", "what does detach actually do?"), read `skills/detach/references/lifecycle-internals.md` and answer from there — don't paraphrase, the file has the precise `vm.dispose` vs. `vm.exit` distinction.
 
 ## What you do NOT do
 
