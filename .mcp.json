@@ -4,9 +4,11 @@
       "type": "stdio",
       "command": "java",
       "args": [
+        "--add-opens=jdk.jdi/com.sun.tools.jdi=ALL-UNNAMED",
         "-jar",
         "${CLAUDE_PLUGIN_ROOT}/dist/android-debugger-server.jar"
       ]
     }
   }
 }
+

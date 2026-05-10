@@ -115,6 +115,13 @@ open class DebugSession {
     /** Holds the event-loop instance so we can call `stop()` cleanly on detach. */
     @Volatile var eventLoop: EventLoop? = null
 
+    /**
+     * Stuck-JDI recovery wrapper (v1.2.4). Set on attach via reflection to capture
+     * the underlying `java.net.Socket`; consulted by tools that wrap blocking JDI
+     * calls when timeouts pile up. See `JdiSocketWedgeRecovery` for the full design.
+     */
+    @Volatile var socketWedgeRecovery: com.acendas.androiddebugger.jdi.JdiSocketWedgeRecovery? = null
+
     /** ANR watchdog instance — runs while attached, watches main-thread suspend duration. */
     @Volatile var anrWatchdog: com.acendas.androiddebugger.events.AnrWatchdog? = null
 
@@ -155,6 +162,7 @@ open class DebugSession {
         eventLoopJob = null
         eventChannel = null
         anrWatchdog = null
+        socketWedgeRecovery = null
     }
 
     /**

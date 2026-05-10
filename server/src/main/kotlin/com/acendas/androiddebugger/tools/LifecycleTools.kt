@@ -184,6 +184,13 @@ object LifecycleTools {
                 }
 
                 Session.vm = vm
+                // Per v1.2.4: capture the underlying JDI socket via reflection so we can
+                // forcibly unwedge the session if a JDI call gets stuck (Compose synthetic
+                // frames, wedged adb forward, etc.). Best-effort; falls back to vm.dispose-only
+                // recovery on a JDK that doesn't expose the field. Requires `--add-opens
+                // jdk.jdi/com.sun.tools.jdi=ALL-UNNAMED` on the server JVM (wired in .mcp.json).
+                Session.socketWedgeRecovery =
+                    com.acendas.androiddebugger.jdi.JdiSocketWedgeRecovery.captureFor(vm)
                 Session.serial = resolvedSerial
                 Session.packageName = pkg
                 Session.pid = targetPid

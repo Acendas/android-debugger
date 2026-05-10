@@ -1,6 +1,6 @@
 {
   "name": "android-debugger",
-  "version": "1.2.3",
+  "version": "1.2.4",
   "description": "Drive an Android app debugging session from Claude Code — set/conditional breakpoints, watches, step over/into/out, evaluate expressions, inspect frames and locals. Backed by a Kotlin MCP server using JDI (Java Debug Interface) over JDWP via adb forward. Cross-platform: macOS, Linux, Windows.",
   "author": {
     "name": "Acendas",

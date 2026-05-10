@@ -93,9 +93,21 @@ object ExecutionTools {
     private fun <T> jdiCallWithTimeout(timeoutMs: Long = JDI_CALL_BUDGET_MS, block: () -> T): T? {
         val future = jdiCallExecutor.submit(java.util.concurrent.Callable { block() })
         return try {
-            future.get(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+            val result = future.get(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+            // Per v1.2.4: a successful call resets the wedge counter. Streaks of
+            // consecutive timeouts are what trigger force-unwedge escalation.
+            Session.socketWedgeRecovery?.notifySuccess()
+            result
         } catch (_: java.util.concurrent.TimeoutException) {
             future.cancel(true)
+            // Per v1.2.4: if multiple JDI calls timed out back-to-back, the JDI
+            // session is wedged and abandoning more workers won't help. Escalate
+            // to vm.dispose() → socket.close() to atomically unblock everything.
+            // Subsequent tool calls will see vm_disconnected and the agent can re-attach.
+            val tripped = Session.socketWedgeRecovery?.notifyTimeout() ?: false
+            if (tripped) {
+                runCatching { Session.socketWedgeRecovery?.escalate() }
+            }
             null
         } catch (_: Throwable) {
             null
