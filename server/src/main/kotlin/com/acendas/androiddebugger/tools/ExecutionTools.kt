@@ -52,6 +52,56 @@ object ExecutionTools {
     /** How long to wait for a step's StepEvent before giving up. Steps are usually instant. */
     private const val STEP_AWAIT_MS: Long = 30_000L
 
+    /**
+     * Per-inner-step timeout for `step_until_method_change`. A single line step on a
+     * paused VM normally completes in &lt;500ms; 2s is generous slack. Lower than
+     * [STEP_AWAIT_MS] so a wedged inner step doesn't blow the outer wall-clock budget.
+     * Per v1.2.3 fix.
+     */
+    private const val STEP_UNTIL_INNER_AWAIT_MS: Long = 2_000L
+
+    /**
+     * Outer wall-clock cap on `step_until_method_change`. Stops the loop if the total
+     * runtime exceeds this even if `max_steps` hasn't been reached. Per v1.2.3 fix —
+     * caught a real hang on Compose-heavy stacks where individual steps land on
+     * synthetic frames that never produce a `StepEvent` cleanly.
+     */
+    private const val STEP_UNTIL_TOTAL_BUDGET_MS: Long = 15_000L
+
+    /**
+     * Hard ceiling for any single JDI call inside the step loop (`vm.resume`,
+     * `Stepper.startStep`, `Stepper.dispose`, `currentMethodOf`). Most of these
+     * complete in &lt;100ms over local adb; on a wedged connection they can block
+     * indefinitely with no Kotlin-side cancellation. We submit them to a dedicated
+     * executor and `Future.get(timeout)` so a wedge becomes a bounded failure
+     * instead of a session-wide hang. Per v1.2.3 fix.
+     */
+    private const val JDI_CALL_BUDGET_MS: Long = 2_000L
+
+    private val jdiCallExecutor: java.util.concurrent.ExecutorService =
+        java.util.concurrent.Executors.newCachedThreadPool { r ->
+            Thread(r, "android-debugger-jdi-call").apply { isDaemon = true }
+        }
+
+    /**
+     * Run [block] on the dedicated JDI executor with a hard timeout. Returns the
+     * result, or `null` on timeout / failure. We *don't* try to interrupt the
+     * leaking thread — JDI's blocking calls don't honor Thread.interrupt, so we
+     * just abandon it as a daemon and let the session reset clean it up later.
+     * The leaked thread is the price of bounded failure.
+     */
+    private fun <T> jdiCallWithTimeout(timeoutMs: Long = JDI_CALL_BUDGET_MS, block: () -> T): T? {
+        val future = jdiCallExecutor.submit(java.util.concurrent.Callable { block() })
+        return try {
+            future.get(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+        } catch (_: java.util.concurrent.TimeoutException) {
+            future.cancel(true)
+            null
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
     fun register(server: Server) {
         registerStep(server, "step_over", Stepper.Depth.Over,
             "Step over the current line. Stays in the same method; if a call is on this line, " +
@@ -119,7 +169,7 @@ object ExecutionTools {
             runTool {
                 val vm = Session.requireAttached()
                 val args = request.arguments
-                val maxSteps = ((args?.get("max_steps") as? JsonPrimitive)?.intOrNull ?: 30)
+                val maxSteps = ((args?.get("max_steps") as? JsonPrimitive)?.intOrNull ?: 10)
                     .coerceIn(1, 500)
                 val skipFilters = (args?.get("skip_filters") as? JsonArray)
                     ?.mapNotNull { it.jsonPrimitive.contentOrNull }
@@ -141,46 +191,73 @@ object ExecutionTools {
                     )
                 }
 
-                val priorMethod = currentMethodOf(thread)
+                val priorMethod = jdiCallWithTimeout { currentMethodOf(thread) }
                     ?: throw ToolError(
                         errorCode = ErrorCode.InvalidTarget,
-                        message = "Could not read current method on thread ${thread.uniqueID()}.",
+                        message = "Could not read current method on thread ${thread.uniqueID()} within ${JDI_CALL_BUDGET_MS}ms.",
+                        hint = "JDI may be wedged — try `detach` and re-attach.",
                     )
 
                 var stepsTaken = 0
+                var innerTimedOut = false
+                val outerStartMs = System.currentTimeMillis()
+
+                // Per v1.2.3: cap the loop with three layers —
+                // 1. Per-JDI-call hard ceiling (JDI_CALL_BUDGET_MS) via a dedicated executor
+                //    so a wedged `vm.resume()` / `Stepper.startStep` / etc. can't hang us.
+                // 2. Per-step await timeout (STEP_UNTIL_INNER_AWAIT_MS) so a step that
+                //    *issues* but never fires its StepEvent doesn't burn the budget.
+                // 3. Outer wall-clock cap (STEP_UNTIL_TOTAL_BUDGET_MS) as a final stop.
+                // Real reproduction on Compose-heavy codepaths showed individual steps
+                // occasionally landing on synthetic frames where the StepEvent fires
+                // irregularly AND JDI calls block adb-side; this trio turns those cases
+                // into bounded `step_budget_exhausted` returns instead of session-wide hangs.
                 while (stepsTaken < maxSteps) {
-                    // Issue a single-step + await its StepEvent, mirroring registerStep's loop.
-                    val req = Stepper.startStep(
-                        vm = vm,
-                        thread = thread,
-                        depth = Stepper.Depth.Over,
-                        extraSkipFilters = skipFilters,
-                        disableDefaultFilters = false,
-                    )
+                    if (System.currentTimeMillis() - outerStartMs > STEP_UNTIL_TOTAL_BUDGET_MS) {
+                        innerTimedOut = true
+                        break
+                    }
+                    // Issue a single-step + await its StepEvent. Both the step request
+                    // creation and the resume are wrapped in jdiCallWithTimeout — a
+                    // JDI hang here would otherwise be uninterruptible from coroutines.
+                    val req = jdiCallWithTimeout {
+                        Stepper.startStep(
+                            vm = vm,
+                            thread = thread,
+                            depth = Stepper.Depth.Over,
+                            extraSkipFilters = skipFilters,
+                            disableDefaultFilters = false,
+                        )
+                    } ?: run {
+                        innerTimedOut = true
+                        break
+                    }
                     Session.bumpVmStateVersion()
                     Session.pausedThread = null
                     Session.state = SessionState.ATTACHED_RUNNING
-                    try {
-                        vm.resume()
-                    } catch (t: Throwable) {
-                        Stepper.dispose(vm, req)
-                        throw t
+                    val resumed = jdiCallWithTimeout {
+                        runCatching { vm.resume() }.isSuccess
+                    } ?: false
+                    if (!resumed) {
+                        jdiCallWithTimeout { Stepper.dispose(vm, req) }
+                        innerTimedOut = true
+                        break
                     }
-                    val event = awaitEvent(STEP_AWAIT_MS) { e ->
+                    val event = awaitEvent(STEP_UNTIL_INNER_AWAIT_MS) { e ->
                         e is DebugEvent.Stopped && e.reason == "step" && e.threadId == thread.uniqueID()
                     }
-                    Stepper.dispose(vm, req)
+                    jdiCallWithTimeout { Stepper.dispose(vm, req) }
                     if (event == null) {
-                        throw ToolError(
-                            errorCode = ErrorCode.Internal,
-                            message = "step_until_method_change: a step did not complete within ${STEP_AWAIT_MS}ms.",
-                            hint = "The thread may be blocked or the VM disconnected. Try wait_for_event.",
-                        )
+                        // Inner step timed out. Force a re-suspend so the outer state
+                        // stays consistent, then bail gracefully with the partial result.
+                        jdiCallWithTimeout { runCatching { thread.suspend() } }
+                        innerTimedOut = true
+                        break
                     }
                     Session.pausedThread = thread
                     Session.state = SessionState.ATTACHED_PAUSED
                     stepsTaken++
-                    val nowMethod = currentMethodOf(thread)
+                    val nowMethod = jdiCallWithTimeout { currentMethodOf(thread) }
                     if (nowMethod != null && nowMethod != priorMethod) {
                         // Method changed — return a fresh snapshot of the new frame.
                         val snapshot = SnapshotBuilder().build(
@@ -197,18 +274,38 @@ object ExecutionTools {
                         }
                     }
                 }
-                // Budget exhausted — return a snapshot of where we ended up + the flag.
-                val snapshot = SnapshotBuilder().build(
-                    thread,
-                    snapshotDepth,
-                    event = "STEP",
-                    pausedReason = "step_budget_exhausted",
-                )
+
+                // Budget exhausted (max_steps, wall-clock, or wedged inner step) — return
+                // whatever state we ended up in plus a clear hint so the agent can switch
+                // tactics rather than silently hang. The final snapshot itself is wrapped
+                // in a JDI timeout because if the thread is in a wedged "running but
+                // should-be-suspended" state, SnapshotBuilder's frame reads can block.
+                Session.pausedThread = thread
+                Session.state = SessionState.ATTACHED_PAUSED
+                val elapsedMs = System.currentTimeMillis() - outerStartMs
+                val snapshot = jdiCallWithTimeout {
+                    SnapshotBuilder().build(
+                        thread,
+                        snapshotDepth,
+                        event = "STEP",
+                        pausedReason = if (innerTimedOut) "step_until_method_change_timeout" else "step_budget_exhausted",
+                    )
+                }
                 toolOk {
-                    put("snapshot", snapshot.toJson())
+                    if (snapshot != null) {
+                        put("snapshot", snapshot.toJson())
+                    } else {
+                        put("snapshot_unavailable", true)
+                        put("snapshot_hint", "Final snapshot timed out after ${JDI_CALL_BUDGET_MS}ms — thread state may be unrecoverable. Detach and re-attach to recover the session.")
+                    }
                     put("steps_taken", stepsTaken)
                     put("prior_method", priorMethod)
                     put("step_budget_exhausted", true)
+                    if (innerTimedOut) {
+                        put("timed_out", true)
+                        put("hint", "A single step exceeded ${STEP_UNTIL_INNER_AWAIT_MS}ms or the loop hit ${STEP_UNTIL_TOTAL_BUDGET_MS}ms total. The thread may be on a synthetic / Compose frame where StepEvents fire irregularly. Try `step_into` once or set a line breakpoint at the next user-code call site.")
+                    }
+                    put("elapsed_ms", elapsedMs)
                     put("vm_state_version", Session.vmStateVersion.get())
                 }
             }
