@@ -199,9 +199,19 @@ open class DebugSession {
     }
 
     /**
-     * Stop the event loop and close the channel. Idempotent — safe to call when
-     * nothing is running. Called from `detach` BEFORE `vm.dispose()` so the JDI
-     * pump has a chance to drain and we don't race a half-disposed VM.
+     * Stop the event loop and close the channel. Idempotent.
+     *
+     * **Ordering rule (per v1.2.2 detach-hang fix):** call this AFTER `vm.dispose()`,
+     * not before. The event-loop coroutine is blocked on `vm.eventQueue().remove()` —
+     * a JDI blocking call that does NOT react to coroutine cancellation between events.
+     * If we `cancelAndJoin` before disposing, the join waits forever because the only
+     * thing that would unblock `queue.remove()` is `vm.dispose()` throwing
+     * `VMDisconnectedException` — and we're waiting to call dispose. Disposing first
+     * lets the loop exit naturally; the join then becomes a no-op.
+     *
+     * Wrapped in a 3 s timeout as a belt-and-suspenders defense in case the loop
+     * still doesn't terminate (transport already broken, JDI quirk, etc.) — far
+     * better to leak the coroutine than to hang `detach` forever.
      */
     fun stopEventLoop() {
         val loop = eventLoop
@@ -214,7 +224,11 @@ open class DebugSession {
             // called from `detach` (suspend-friendly) and from the JVM shutdown hook
             // (plain Thread, cannot suspend), so we currently keep `runBlocking` for the
             // shutdown path. Per R-03.
-            runCatching { runBlocking { loop.stop() } }
+            runCatching {
+                runBlocking {
+                    kotlinx.coroutines.withTimeoutOrNull(3_000) { loop.stop() }
+                }
+            }
         }
         channel?.close()
     }
@@ -230,14 +244,21 @@ open class DebugSession {
         val priorSerial = serial
         if (wasAttached) {
             state = SessionState.DETACHING
-            // Stop the event loop BEFORE disposing the VM — otherwise the pump
-            // races a half-disposed VM and emits noise. Per Task 4.1.3 wiring rule.
+            // ANR watchdog is independent — stop it first.
             // HACK: re-evaluate when the MCP SDK ships proper suspend handlers — detach
             // is called from a suspend tool body but also from the JVM shutdown hook
             // which cannot suspend, so `runBlocking` stays for now. Per R-03.
             runCatching { anrWatchdog?.let { runBlocking { it.stop() } } }
-            stopEventLoop()
+            // **Order matters (per v1.2.2 detach-hang fix).** Dispose the VM FIRST.
+            // This causes `vm.eventQueue().remove()` (running in the event-loop coroutine)
+            // to throw `VMDisconnectedException`, letting the loop exit naturally.
+            // If we tried to stop the event loop first, `cancelAndJoin` would wait
+            // forever for the blocking JDI call to react to cancellation — JDI's
+            // `queue.remove()` doesn't check coroutine cancellation between events.
             runCatching { vm?.dispose() }
+            // Now the loop has terminated (or is about to); join it cleanly.
+            // `stopEventLoop` has its own 3 s timeout so this can't hang.
+            stopEventLoop()
         } else {
             // Defensive: event loop should not be running when not attached, but
             // make sure we don't leak coroutine state on a re-entrant detach.
