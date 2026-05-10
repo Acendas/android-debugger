@@ -90,13 +90,17 @@ object AndroidTools {
             toolAnnotations = ToolAnnotations(readOnlyHint = false, openWorldHint = true),
         ) { request ->
             runTool {
+                // Per R-16: gate on attached state. A pre-attach `tail_logcat` would
+                // create a buffer that survives until detach, leaking adb subprocesses
+                // tied to no debug session.
+                Session.requireAttached()
                 val args = request.arguments
                 val filter = (args?.get("filter") as? JsonPrimitive)?.contentOrNull
                 val regex = (args?.get("regex") as? JsonPrimitive)?.contentOrNull
                 val since = (args?.get("since") as? JsonPrimitive)?.contentOrNull
                 val maxBuffer = ((args?.get("max_buffer") as? JsonPrimitive)?.intOrNull ?: 2000)
                     .coerceIn(50, 50_000)
-                val scopeToApp = (args?.get("scope_to_app") as? JsonPrimitive)?.contentOrNull?.toBooleanStrictOrNull() ?: true
+                val scopeToApp = (args?.get("scope_to_app") as? JsonPrimitive)?.booleanOrNull ?: true
                 val pidFilterArg = (args?.get("pid_filter") as? JsonPrimitive)?.intOrNull
                     ?: if (scopeToApp) Session.pid else null
 

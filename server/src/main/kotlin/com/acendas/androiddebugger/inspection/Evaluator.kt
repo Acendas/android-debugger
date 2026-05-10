@@ -70,6 +70,12 @@ object Evaluator {
             )
         }
         return try {
+            // HACK: re-evaluate when the MCP SDK ships proper suspend handlers and
+            // [Evaluator.evaluate] can become a `suspend fun`. Today this is also called
+            // from the non-suspend JDI event-loop thread (conditional breakpoints,
+            // logpoint rendering), so a `runBlocking` is still required for the shared
+            // implementation. The mutex below is private to the Evaluator and never
+            // contends with the outer Session.mutex held by `runTool`. Per R-03.
             runBlocking {
                 mutex.withLock {
                     withTimeout(timeoutMs) {

@@ -13,6 +13,8 @@ import com.sun.jdi.request.ExceptionRequest
 import com.sun.jdi.request.MethodEntryRequest
 import com.sun.jdi.request.MethodExitRequest
 import com.sun.jdi.request.ModificationWatchpointRequest
+import java.util.Collections
+import java.util.IdentityHashMap
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -93,6 +95,16 @@ object BreakpointManager {
     private val nextId = AtomicInteger(1)
     private val metas: MutableMap<Int, BreakpointMeta> = ConcurrentHashMap()
 
+    /**
+     * Per R-19: O(1) reverse index from JDI [EventRequest] (identity-hashed, since
+     * JDI requests don't override equals) back to the owning [BreakpointMeta]. The
+     * event loop hits this on every breakpoint / watchpoint / method-entry-exit
+     * event, which previously did a linear scan over `metas.values`. With method-entry
+     * breakpoints under a hot logpoint sweep that scan dominated handler time.
+     */
+    private val requestIndex: MutableMap<EventRequest, BreakpointMeta> =
+        Collections.synchronizedMap(IdentityHashMap())
+
     fun size(): Int = metas.size
 
     fun all(): List<BreakpointMeta> = metas.values.sortedBy { it.id }
@@ -106,6 +118,7 @@ object BreakpointManager {
         // Don't try to call disable() on the requests; the VM is gone by the time this
         // runs (or we're explicitly resetting). Just drop the bookkeeping.
         metas.clear()
+        requestIndex.clear()
         nextId.set(1)
     }
 
@@ -115,19 +128,30 @@ object BreakpointManager {
      */
     fun register(meta: BreakpointMeta) {
         metas[meta.id] = meta
+        // Mirror any pre-populated active requests into the reverse index so the event
+        // loop can resolve them on first hit.
+        for (req in meta.activeRequests) {
+            requestIndex[req] = meta
+        }
+    }
+
+    /**
+     * Attach a freshly-created JDI [EventRequest] to [meta]. Updates both the meta's
+     * own list and the reverse index. Per R-19. Use this from any tool / event-loop
+     * site that adds a new active request — the index stays consistent without each
+     * caller knowing it exists.
+     */
+    fun attachRequest(meta: BreakpointMeta, request: EventRequest) {
+        meta.activeRequests.add(request)
+        requestIndex[request] = meta
     }
 
     /**
      * Lookup by JDI request — used by the event loop on every breakpoint/exception
-     * /watchpoint hit. Linear over the meta map but the count is bounded (typical
-     * debugger sessions have <50 breakpoints, often <10).
+     * /watchpoint hit. Per R-19, this is now an O(1) lookup against the
+     * [requestIndex] rather than a linear scan over `metas.values`.
      */
-    fun findByRequest(request: EventRequest): BreakpointMeta? {
-        for (meta in metas.values) {
-            if (meta.activeRequests.contains(request)) return meta
-        }
-        return null
-    }
+    fun findByRequest(request: EventRequest): BreakpointMeta? = requestIndex[request]
 
     fun findByPrepareRequest(request: EventRequest): BreakpointMeta? {
         if (request !is ClassPrepareRequest) return null
@@ -147,6 +171,9 @@ object BreakpointManager {
         for (req in meta.activeRequests) {
             runCatching { req.disable() }
             runCatching { erm.deleteEventRequest(req) }
+            // Per R-19: drop the reverse-index entry so the event loop never resolves a
+            // stale meta after remove returns.
+            requestIndex.remove(req)
         }
         for (cpr in meta.deferredPrepareRequests) {
             runCatching { cpr.disable() }
@@ -212,7 +239,7 @@ object BreakpointManager {
                 setSuspendPolicy(suspendPolicyFor(meta))
                 if (meta.enabled) enable() else disable()
             }
-            meta.activeRequests.add(bpReq)
+            attachRequest(meta, bpReq)
             added++
         }
         return added

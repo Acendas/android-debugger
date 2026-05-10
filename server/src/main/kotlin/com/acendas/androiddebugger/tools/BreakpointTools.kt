@@ -139,7 +139,7 @@ object BreakpointTools {
                         setSuspendPolicy(BreakpointManager.suspendPolicyFor(meta))
                         enable()
                     }
-                    meta.activeRequests.add(req)
+                    BreakpointManager.attachRequest(meta, req)
                 }
 
                 // Class-prepare deferral: register patterns even when we already resolved
@@ -231,7 +231,7 @@ object BreakpointTools {
                         setSuspendPolicy(EventRequest.SUSPEND_EVENT_THREAD)
                         enable()
                     }
-                    meta.activeRequests.add(req)
+                    BreakpointManager.attachRequest(meta, req)
                 } else {
                     val refs = vm.classesByName(cls)
                     if (refs.isEmpty()) {
@@ -244,7 +244,7 @@ object BreakpointTools {
                                 setSuspendPolicy(EventRequest.SUSPEND_EVENT_THREAD)
                                 enable()
                             }
-                            meta.activeRequests.add(req)
+                            BreakpointManager.attachRequest(meta, req)
                         }
                     }
                 }
@@ -323,14 +323,14 @@ object BreakpointTools {
                         setSuspendPolicy(EventRequest.SUSPEND_EVENT_THREAD)
                         enable()
                     }
-                    meta.activeRequests.add(req)
+                    BreakpointManager.attachRequest(meta, req)
                 } else {
                     val req: MethodExitRequest = erm.createMethodExitRequest().apply {
                         addClassFilter(cls)
                         setSuspendPolicy(EventRequest.SUSPEND_EVENT_THREAD)
                         enable()
                     }
-                    meta.activeRequests.add(req)
+                    BreakpointManager.attachRequest(meta, req)
                 }
 
                 BreakpointManager.register(meta)
@@ -439,14 +439,14 @@ object BreakpointTools {
                         setSuspendPolicy(EventRequest.SUSPEND_EVENT_THREAD)
                         enable()
                     }
-                    meta.activeRequests.add(req)
+                    BreakpointManager.attachRequest(meta, req)
                 }
                 if (wantModification) {
                     val req: ModificationWatchpointRequest = erm.createModificationWatchpointRequest(field).apply {
                         setSuspendPolicy(EventRequest.SUSPEND_EVENT_THREAD)
                         enable()
                     }
-                    meta.activeRequests.add(req)
+                    BreakpointManager.attachRequest(meta, req)
                 }
 
                 BreakpointManager.register(meta)

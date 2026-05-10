@@ -21,14 +21,11 @@ import com.sun.jdi.request.EventRequest
 import io.modelcontextprotocol.kotlin.sdk.server.Server
 import io.modelcontextprotocol.kotlin.sdk.types.ToolAnnotations
 import io.modelcontextprotocol.kotlin.sdk.types.ToolSchema
-import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.selects.select
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -103,7 +100,7 @@ object ExecutionTools {
                 val extras = (args?.get("extra_skip_filters") as? JsonArray)
                     ?.mapNotNull { it.jsonPrimitive.contentOrNull }
                     ?: emptyList()
-                val disableDefaults = (args?.get("disable_default_filters") as? JsonPrimitive)?.contentOrNull?.toBooleanStrictOrNull() ?: false
+                val disableDefaults = (args?.get("disable_default_filters") as? JsonPrimitive)?.booleanOrNull ?: false
                 val snapshotDepth = ((args?.get("snapshot_depth") as? JsonPrimitive)?.intOrNull ?: 5).coerceIn(1, 30)
 
                 // Per Story 7.1.4: step budget. Read the current method off the paused
@@ -479,37 +476,14 @@ object ExecutionTools {
     }
 
     /**
-     * Read the next event from the session channel that satisfies [predicate], with a
-     * timeout. Non-matching events are re-sent into the channel after the wait
-     * completes so other readers don't lose them. Cleanest impl with the Channel API:
-     * we drain into a list and re-queue the leftovers.
+     * Read the next event satisfying [predicate], up to [timeoutMs]. Per R-07, this
+     * routes through [com.acendas.androiddebugger.events.EventLoop.awaitEvent], which
+     * uses a one-shot listener registry so concurrent waiters don't race over a shared
+     * channel drain. Returns `null` if the event loop isn't running yet (pre-attach) or
+     * the wait times out.
      */
-    private fun awaitEvent(timeoutMs: Long, predicate: (DebugEvent) -> Boolean): DebugEvent? = runBlocking {
-        val channel: Channel<DebugEvent> = Session.eventChannel ?: return@runBlocking null
-        val deferred = mutableListOf<DebugEvent>()
-        var matched: DebugEvent? = null
-        val deadline = System.currentTimeMillis() + timeoutMs
-        try {
-            while (System.currentTimeMillis() < deadline) {
-                val remaining = (deadline - System.currentTimeMillis()).coerceAtLeast(1L)
-                val next = withTimeoutOrNull(remaining) {
-                    select<DebugEvent?> {
-                        channel.onReceive { it }
-                    }
-                } ?: break
-                if (predicate(next)) {
-                    matched = next
-                    break
-                } else {
-                    deferred += next
-                }
-            }
-        } finally {
-            // Re-queue everything we drained but didn't consume so subsequent waits see them.
-            for (e in deferred) {
-                channel.trySend(e)
-            }
-        }
-        matched
+    private suspend fun awaitEvent(timeoutMs: Long, predicate: (DebugEvent) -> Boolean): DebugEvent? {
+        val loop = Session.eventLoop ?: return null
+        return loop.awaitEvent(timeoutMs, predicate)
     }
 }

@@ -54,7 +54,8 @@ echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":
 
 You should see a JSON-RPC response advertising the tools. To smoke a real attach (with a sample app running):
 
-```
+**macOS / Linux / Git Bash:**
+```bash
 (echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}'
  sleep 0.3
  echo '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"attach","arguments":{"package":"com.example.jetnews"}}}'
@@ -64,7 +65,32 @@ You should see a JSON-RPC response advertising the tools. To smoke a real attach
 ) | java -jar android-debugger/dist/android-debugger-server.jar
 ```
 
+**Windows PowerShell:**
+```powershell
+$msgs = @(
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}',
+  '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"attach","arguments":{"package":"com.example.jetnews"}}}',
+  '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"detach","arguments":{}}}'
+) -join "`n"
+$msgs | java -jar android-debugger/dist/android-debugger-server.jar
+```
+
+(Plain `cmd.exe` doesn't have the parentheses-grouping or `sleep` builtin — use PowerShell or Git Bash.)
+
 Replace `com.example.jetnews` with whichever sample you installed.
+
+## First-time push of the plugin repo
+
+The plugin's own `.git` is local-only after a fresh build. To push to the GitHub remote so the marketplace `ref: vX.Y.Z` resolves:
+
+```bash
+cd android-debugger
+git remote add origin git@github.com:Acendas/android-debugger.git
+git push -u origin main
+git push --tags
+```
+
+Skipping `--tags` orphans the marketplace entry (which pins by tag, not commit).
 
 ## Code conventions
 

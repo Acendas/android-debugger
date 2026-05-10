@@ -31,7 +31,7 @@ The user has a debuggable APK on a device/emulator and wants Claude driving the 
      - `field_modification_watchpoints: false` → "field watchpoints unavailable"
    - If the response includes `warnings` and `release_build_likely` is present, surface that prominently — local-variable inspection will be mostly empty until they rebuild as a debug variant.
 
-6. Suggest the next step: "Set a breakpoint with `/android-debugger:break`" (if the user has a specific bug in mind) "or describe the bug to investigate with `/android-debugger:investigate`."
+6. Suggest the next step: "Describe the bug to investigate with `/android-debugger:investigate`" (catch-all router) "or jump straight to `/android-debugger:catch <exception>` if you already know what's crashing."
 
 ## Cross-platform notes
 

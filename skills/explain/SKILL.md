@@ -1,7 +1,6 @@
 ---
 name: Explain why we paused
 description: This skill should be used when the user asks "explain why we stopped here", "what's happening now", "what does this paused state mean", "why did we hit this breakpoint", "analyze this stop", "where am I", or runs `/android-debugger:explain`. The cheap, high-leverage default after every pause — calls `frame_snapshot`, identifies the most-interesting frame and locals, and proposes 2–3 hypotheses for why we paused. Refuses to invent values not in the snapshot.
-argument-hint: ""
 allowed-tools: mcp__android-debugger__frame_snapshot, mcp__android-debugger__evaluate, mcp__android-debugger__inspect_object
 ---
 

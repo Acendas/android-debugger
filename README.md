@@ -50,6 +50,19 @@ When you're done:
 
 The full skill set: `:setup`, `:attach`, `:detach`, `:status`, `:explain`, `:catch`, `:trace`, `:walk`, `:bisect-flaky`, `:investigate`. Run `/android-debugger:investigate <goal>` to let Claude triage your goal (crash / unexpected behavior / flaky test / onboarding) and dispatch the right workflow.
 
+### Autonomous mode — the orchestrator agent
+
+For "I'm stuck, please debug this for me" workflows, hand the whole loop to the registered `android-debug-orchestrator` agent:
+
+```
+Agent({
+  subagent_type: "android-debug-orchestrator",
+  prompt: "Why does login crash on slow networks? App is com.example.app."
+})
+```
+
+The agent attaches, triages the goal (crash / behavior / flaky / onboarding), runs the matching iterative loop end-to-end, and returns a structured findings report (hypothesis / evidence / proposed fix shape / repro recipe). Your main session sees one prompt + one report instead of dozens of tool-call rounds. `/android-debugger:investigate` will offer to dispatch to the agent on goals that look mechanical enough.
+
 ## How it works
 
 1. `adb jdwp` lists debuggable PIDs on the connected device.
@@ -73,6 +86,8 @@ The server only listens on `localhost` — adb's port forward binds there, and J
 **App ANR-killed mid-debug** — the system kills processes that block the main thread for >5s. Set breakpoints off the UI thread, or use logpoints (non-suspending) for main-thread suspects.
 
 **Transient disconnect** (USB unplug, emulator restart) — surfaces as `code: vm_disconnected`. Re-run `/android-debugger:attach`. Breakpoints don't persist across sessions in v1.0.
+
+**`dump_heap` fails with permission denied** — `am dumpheap` needs `run-as` access on Android 11+, which only debuggable APKs have on user/userdebug builds. Confirm the app is built debuggable (the `attach` response carries a `release_build_likely` warning if it isn't), or run on a rooted/eng emulator if you're profiling a release build.
 
 ## Building from source
 

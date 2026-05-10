@@ -2,7 +2,7 @@
 name: Bisect a flaky test
 description: This skill should be used when the user asks "this test fails 1 in 10 times", "bisect this flaky test", "narrow down a flaky failure", "why does this test sometimes fail", "find the trigger for the flake", or runs `/android-debugger:bisect-flaky`. Loops a flaky instrumented test until both pass and fail are observed, captures state at the divergence point with conditional breakpoints, narrows down the trigger, proposes a hypothesis.
 argument-hint: "<test class.method>"
-allowed-tools: Bash, Read, Grep, mcp__android-debugger__connection_status, mcp__android-debugger__attach, mcp__android-debugger__detach, mcp__android-debugger__add_exception_breakpoint, mcp__android-debugger__add_line_breakpoint, mcp__android-debugger__list_breakpoints, mcp__android-debugger__remove_breakpoint, mcp__android-debugger__wait_for_event, mcp__android-debugger__frame_snapshot, mcp__android-debugger__evaluate, mcp__android-debugger__tail_logcat, mcp__android-debugger__read_logcat
+allowed-tools: Read, Grep, mcp__android-debugger__connection_status, mcp__android-debugger__attach, mcp__android-debugger__detach, mcp__android-debugger__add_exception_breakpoint, mcp__android-debugger__add_line_breakpoint, mcp__android-debugger__list_breakpoints, mcp__android-debugger__remove_breakpoint, mcp__android-debugger__wait_for_event, mcp__android-debugger__frame_snapshot, mcp__android-debugger__evaluate, mcp__android-debugger__resume, mcp__android-debugger__tail_logcat, mcp__android-debugger__read_logcat
 ---
 
 # Bisect-flaky — loop a flaky test until you can see the divergence
@@ -50,6 +50,12 @@ The loop is human-in-the-loop: Claude orchestrates the breakpoints + analysis; t
    - Show the divergent locals.
    - Propose a fix shape (e.g., "the cache isn't being cleared between tests; add `@After cache.clear()`" or "the assertion races against an async write; use `runTest { advanceUntilIdle() }`").
    - Cleanup: `remove_breakpoint` for every id in `list_breakpoints`. Detach.
+
+## Anti-hallucination
+
+- **Never** claim a divergent local without grounding in two captured snapshots — quote the actual values (`pass-1: counter=10` vs. `fail-3: counter=11`). The flake hypothesis must point at a real, observed difference.
+- **Never** propose a fix until you've captured ≥1 pass and ≥1 fail. If you can't reproduce the failure within 10 rounds, surface that honestly: "ran 10 iterations, all passed — couldn't observe the flake; recommend more aggressive test seeding or a different breakpoint set."
+- **Never** evaluate methods that may mutate state during the loop (setters, `clear()`, `reset()`, repository writes). Read paths only.
 
 ## What you do NOT do
 

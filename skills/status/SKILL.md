@@ -1,7 +1,6 @@
 ---
 name: android-debugger status
-description: This skill should be used when the user asks "what's the debugger status", "is android-debugger connected", "show debug session", "am I attached", "where are we in the debug session", or runs `/android-debugger:status`. Reports the current debug session — server reachability, attached process, paused/running state, breakpoint and watch counts. Run any time the user asks "where are we" mid-debug, or after coming back from a break.
-argument-hint: ""
+description: This skill should be used when the user asks "what's the debugger status", "is android-debugger connected", "show debug session", "am I attached", "list active breakpoints", or runs `/android-debugger:status`. Reports the current debug session — server reachability, attached process, paused/running state, breakpoint and watch counts. Cheap read-only summary; never blocks on a paused VM. For "why did we stop here" / "what's happening at this pause", route to `/android-debugger:explain` instead — that's the post-pause hypothesis tool.
 allowed-tools: mcp__android-debugger__connection_status, mcp__android-debugger__list_threads
 ---
 
@@ -33,7 +32,7 @@ A read-only one-pager. Don't change anything; don't probe the user's machine. Ju
 
 3. If `state == ATTACHED_PAUSED`, optionally call `mcp__android-debugger__list_threads` and surface the count of suspended threads + the name of the paused thread (the one carrying the user's code, usually `main`). This helps the user remember "right, we're paused at a breakpoint."
 
-4. If `state == ATTACHED_RUNNING` and there are active breakpoints, suggest the user `resume`/`pause` or wait for a breakpoint hit. If there are zero breakpoints set, suggest `/android-debugger:break` or `/android-debugger:catch`.
+4. If `state == ATTACHED_RUNNING` and there are active breakpoints, suggest the user `resume`/`pause` or wait for a breakpoint hit. If there are zero breakpoints set, suggest `/android-debugger:catch <exception>` for crashes or `/android-debugger:investigate <goal>` for the catch-all router.
 
 ## What you do NOT do
 

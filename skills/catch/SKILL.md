@@ -2,7 +2,7 @@
 name: Catch an exception and root-cause
 description: This skill should be used when the user asks "why does X crash", "find the source of this NPE", "catch this IllegalStateException", "trace this exception", "break on uncaught exception", "find what's throwing", or runs `/android-debugger:catch`. Sets an uncaught exception breakpoint (optionally scoped to a class), prompts the user to reproduce, awaits the hit via wait_for_event, then runs the explain pattern on the paused frame.
 argument-hint: "[exception-class]"
-allowed-tools: mcp__android-debugger__connection_status, mcp__android-debugger__add_exception_breakpoint, mcp__android-debugger__wait_for_event, mcp__android-debugger__frame_snapshot, mcp__android-debugger__remove_breakpoint, mcp__android-debugger__evaluate
+allowed-tools: mcp__android-debugger__connection_status, mcp__android-debugger__add_exception_breakpoint, mcp__android-debugger__wait_for_event, mcp__android-debugger__frame_snapshot, mcp__android-debugger__inspect_object, mcp__android-debugger__remove_breakpoint, mcp__android-debugger__evaluate
 ---
 
 # Catch — break on the next throw and root-cause it

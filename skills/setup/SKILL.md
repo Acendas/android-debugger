@@ -1,7 +1,6 @@
 ---
 name: Setup android-debugger
 description: This skill should be used when the user asks to "setup android debugger", "init android debugger", "configure android debugger", "check android debugger environment", "verify java and adb", "android debugger isn't working", or runs `/android-debugger:setup`. Probes the user's environment for JDK + adb, verifies the MCP server is reachable, and reports what's missing with platform-specific (macOS/Linux/Windows) install hints. Run once after install, and any time the debugger reports "adb not found" or fails to start.
-argument-hint: ""
 allowed-tools: Bash, mcp__android-debugger__server_info, mcp__android-debugger__list_devices
 ---
 

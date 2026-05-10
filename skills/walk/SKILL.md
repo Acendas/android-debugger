@@ -1,6 +1,6 @@
 ---
 name: Walk through code
-description: This skill should be used when the user asks "walk me through X", "show me how login works", "onboard me to this code", "explain what happens when I tap Y", "trace through this method", or runs `/android-debugger:walk`. Guided walkthrough with a step budget — sets one breakpoint at the entry, prompts the user to trigger, then steps with bounded budget, narrating each new method/frame in plain English. Stops automatically on budget exhaustion or scope leave.
+description: This skill should be used when the user asks "walk me through X", "show me how login works", "onboard me to this code", "explain what happens when I tap Y", "step through this method", or runs `/android-debugger:walk`. Guided walkthrough with a step budget — sets one breakpoint at the entry, prompts the user to trigger, then steps with bounded budget, narrating each new method/frame in plain English. Stops automatically on budget exhaustion or scope leave. Different from `/android-debugger:trace` — this skill steps line-by-line interactively; `:trace` instruments with non-suspending logpoints and reads the timeline.
 argument-hint: "<entry point — file:line or class.method>"
 allowed-tools: Read, Grep, mcp__android-debugger__connection_status, mcp__android-debugger__add_line_breakpoint, mcp__android-debugger__remove_breakpoint, mcp__android-debugger__wait_for_event, mcp__android-debugger__frame_snapshot, mcp__android-debugger__step_into, mcp__android-debugger__step_over, mcp__android-debugger__step_out, mcp__android-debugger__resume
 ---

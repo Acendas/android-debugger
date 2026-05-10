@@ -2,7 +2,7 @@
 name: Investigate an Android issue
 description: This skill should be used when the user asks to "debug this android bug", "investigate why X happens", "find the cause of this issue", "I have a problem with my android app", "why is this happening", "help me debug this", or runs `/android-debugger:investigate`. The catch-all orchestrator — first asks whether to drive interactively or hand the loop to the autonomous Android Debug Orchestrator agent, then either triages into a specialist skill (:catch / :trace / :bisect-flaky / :walk) or dispatches to the agent for end-to-end investigation. Use this when you don't know which specialized skill fits.
 argument-hint: "<bug description or investigation goal>"
-allowed-tools: mcp__android-debugger__connection_status
+allowed-tools: AskUserQuestion, Task, mcp__android-debugger__connection_status, mcp__android-debugger__add_line_breakpoint, mcp__android-debugger__add_field_watchpoint
 ---
 
 # Investigate — top-level debugging orchestrator

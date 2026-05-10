@@ -33,18 +33,19 @@ import com.sun.jdi.event.VMDeathEvent
 import com.sun.jdi.event.VMDisconnectEvent
 import com.sun.jdi.event.VMStartEvent
 import com.sun.jdi.event.WatchpointEvent
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
-import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.channels.trySendBlocking
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import org.slf4j.LoggerFactory
+import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * Single coroutine that pumps `vm.eventQueue()` into a [Channel] of typed [DebugEvent]s.
@@ -73,6 +74,98 @@ class EventLoop(
     @Volatile
     private var pumpJob: Job? = null
 
+    /**
+     * One-shot listener registered by [awaitEvent]. The JDI thread inspects the listener
+     * list FIFO and hands the first event whose predicate matches to that listener; the
+     * listener completes its [deferred] and is removed from the list. Per R-07.
+     *
+     * Concurrency: the list is a [CopyOnWriteArrayList] so the JDI dispatch path can
+     * iterate without locking, and listener registration / removal are infrequent.
+     */
+    private data class Listener(
+        val predicate: (DebugEvent) -> Boolean,
+        val deferred: CompletableDeferred<DebugEvent>,
+    )
+
+    private val listeners: CopyOnWriteArrayList<Listener> = CopyOnWriteArrayList()
+
+    /**
+     * Block the calling coroutine until the next [DebugEvent] satisfying [predicate]
+     * arrives, or [timeoutMs] elapses. Concurrent waiters are dispatched in registration
+     * order: each event hands off to the first matching listener, so multiple
+     * `wait_for_event` calls with disjoint type filters all see the events they expect
+     * in arrival order. Per R-07.
+     *
+     * If no listener matches a given event, it falls through to the legacy channel so a
+     * later `wait_for_event` (registered after the event arrived) can still see it.
+     */
+    suspend fun awaitEvent(timeoutMs: Long, predicate: (DebugEvent) -> Boolean): DebugEvent? {
+        val deferred = CompletableDeferred<DebugEvent>()
+        val listener = Listener(predicate, deferred)
+        listeners.add(listener)
+        // Drain any already-queued events that match before we wait — keeps semantics
+        // identical to the pre-R-07 channel-drain behavior. Iterate the channel poll
+        // path; non-matching events go back through the dispatch path so other waiters
+        // can claim them.
+        try {
+            while (true) {
+                val polled = channel.tryReceive().getOrNull() ?: break
+                if (predicate(polled)) {
+                    return polled
+                }
+                dispatch(polled)
+                if (deferred.isCompleted) {
+                    // dispatch handed it to a different listener; keep looking for ours.
+                    // (Shouldn't happen because predicate(polled) was false, but be safe.)
+                    break
+                }
+            }
+            return withTimeoutOrNull(timeoutMs) { deferred.await() }
+        } finally {
+            listeners.remove(listener)
+        }
+    }
+
+    /**
+     * Dispatch a freshly-arrived [DebugEvent]. Hands it to the first matching listener
+     * and returns; if no listener matches, falls back to the channel so a later
+     * `wait_for_event` can still see it. Per R-07.
+     */
+    private fun dispatch(event: DebugEvent) {
+        // Iterate snapshot. CopyOnWriteArrayList iteration sees a frozen view; the
+        // listener may have already been removed by a timeout — `complete` returns false
+        // in that case and we move on.
+        for (listener in listeners) {
+            if (listener.predicate(event)) {
+                if (listener.deferred.complete(event)) {
+                    listeners.remove(listener)
+                    return
+                }
+            }
+        }
+        // No active listener matched — fall back to the channel. Consumers polling
+        // the channel directly (legacy / Disconnect catch-all) will still see it.
+        runCatching { channel.trySend(event) }
+    }
+
+    /**
+     * Broadcast a [DebugEvent.Disconnect] to every active waiter and into the channel.
+     * Used in the disconnect path — every concurrent waiter needs to wake up, not just
+     * the first matching one.
+     */
+    private fun broadcastDisconnect() {
+        val ev = DebugEvent.Disconnect
+        // Snapshot to avoid concurrent-modification under iteration; CopyOnWriteArrayList
+        // already provides a safe iterator but we want to remove() on hits.
+        for (listener in listeners.toList()) {
+            if (listener.predicate(ev)) {
+                listener.deferred.complete(ev)
+                listeners.remove(listener)
+            }
+        }
+        runCatching { channel.trySend(ev) }
+    }
+
     /** Start pumping. Returns the running job so callers can hold + cancel it. */
     fun start(): Job {
         val job = scope.launch {
@@ -93,7 +186,7 @@ class EventLoop(
             } catch (t: Throwable) {
                 log.warn("event loop terminated unexpectedly: ${t.message}")
             } finally {
-                runCatching { channel.trySend(DebugEvent.Disconnect) }
+                runCatching { broadcastDisconnect() }
             }
         }
         pumpJob = job
@@ -142,7 +235,7 @@ class EventLoop(
     private fun processEvent(event: Event): Outcome {
         // VM lifecycle short-circuits.
         if (event is VMDisconnectEvent || event is VMDeathEvent) {
-            runCatching { channel.trySend(DebugEvent.Disconnect) }
+            runCatching { broadcastDisconnect() }
             return Outcome.DISCONNECT
         }
         if (event is VMStartEvent || event is ThreadStartEvent || event is ThreadDeathEvent) {
@@ -155,7 +248,7 @@ class EventLoop(
         if (event is ClassPrepareEvent) {
             handleClassPrepare(event)
             runCatching {
-                channel.trySend(DebugEvent.ClassPrepare(
+                dispatch(DebugEvent.ClassPrepare(
                     className = runCatching { event.referenceType().name() }.getOrDefault(""),
                 ))
             }
@@ -198,21 +291,39 @@ class EventLoop(
     }
 
     private fun handleException(event: ExceptionEvent): Outcome {
+        // Per R-20: gate exception events on meta.enabled + condition the same way the
+        // breakpoint / watchpoint / method-entry-exit handlers do. Disabling an exception
+        // breakpoint via `disable_breakpoint` already calls `req.disable()` so JDI stops
+        // firing, but symmetry across handlers prevents drift if we ever change the
+        // disable path.
+        val meta = BreakpointManager.findByRequest(event.request())
+        meta?.totalHits?.incrementAndGet()
+        if (meta != null && !meta.enabled) return Outcome.RESUME
+
+        // Conditional path mirrors handleBreakpoint — useful for "stop only when
+        // exception.message contains X" patterns the agent may hand in via
+        // add_exception_breakpoint(condition=...).
+        val condition = meta?.condition
+        if (condition != null) {
+            val passed = evalCondition(condition, event)
+            if (!passed) {
+                meta.falseConditionHits.incrementAndGet()
+                return Outcome.RESUME
+            }
+        }
+
         val exc = runCatching { event.exception() }.getOrNull()
         val excId = exc?.let { ObjectIdMint.registerObject(it) }
         val excClass = exc?.referenceType()?.name()
         val caughtNow = runCatching { event.catchLocation() != null }.getOrDefault(false)
         runCatching {
-            channel.trySend(DebugEvent.Exception(
+            dispatch(DebugEvent.Exception(
                 exceptionId = excId,
                 exceptionClass = excClass,
                 threadId = runCatching { event.thread().uniqueID() }.getOrNull(),
                 caught = caughtNow,
             ))
         }
-        // Bookkeeping for any matching ExceptionRequest meta.
-        val meta = BreakpointManager.findByRequest(event.request())
-        meta?.totalHits?.incrementAndGet()
         meta?.deliveredStops?.incrementAndGet()
         markPaused(event)
         return Outcome.STOPPED
@@ -350,7 +461,7 @@ class EventLoop(
                         if (meta.enabled) enable() else disable()
                     }
                 }.getOrNull()
-                if (req != null) meta.activeRequests.add(req)
+                if (req != null) BreakpointManager.attachRequest(meta, req)
             }
             else -> {
                 // Method entry/exit and field watchpoints aren't deferred via class-prepare in v1.
@@ -358,7 +469,7 @@ class EventLoop(
         }
     }
 
-    private fun evalCondition(condition: String, event: BreakpointEvent): Boolean {
+    private fun evalCondition(condition: String, event: LocatableEvent): Boolean {
         return try {
             val ast = ExprParser.parse(condition)
             val v = Evaluator.evaluate(event.thread(), 0, ast)
@@ -380,31 +491,16 @@ class EventLoop(
     }
 
     private fun sendStopped(reason: String, event: LocatableEvent, breakpointId: Int? = null) {
-        runCatching {
-            channel.trySend(DebugEvent.Stopped(
-                reason = reason,
-                threadId = runCatching { event.thread().uniqueID() }.getOrNull(),
-                threadName = runCatching { event.thread().name() }.getOrNull(),
-                breakpointId = breakpointId,
-                location = locationString(event),
-            ))
-        }.onFailure {
-            // Channel closed — disconnect path; nothing to do.
-        }.let {
-            // If the Channel's first try failed (full buffer + DROP_OLDEST), make a
-            // best-effort blocking send so we don't lose the stop signal.
-            if (it.isFailure) {
-                runCatching {
-                    channel.trySendBlocking(DebugEvent.Stopped(
-                        reason = reason,
-                        threadId = runCatching { event.thread().uniqueID() }.getOrNull(),
-                        threadName = runCatching { event.thread().name() }.getOrNull(),
-                        breakpointId = breakpointId,
-                        location = locationString(event),
-                    ))
-                }
-            }
-        }
+        val stopped = DebugEvent.Stopped(
+            reason = reason,
+            threadId = runCatching { event.thread().uniqueID() }.getOrNull(),
+            threadName = runCatching { event.thread().name() }.getOrNull(),
+            breakpointId = breakpointId,
+            location = locationString(event),
+        )
+        // Per R-07: dispatch hands the event to the first matching listener registered
+        // by [awaitEvent]; if none match, it falls back to the channel as a backstop.
+        runCatching { dispatch(stopped) }
     }
 
     private fun markPaused(event: LocatableEvent) {

@@ -2,6 +2,7 @@ package com.acendas.androiddebugger
 
 import io.modelcontextprotocol.kotlin.sdk.types.CallToolResult
 import io.modelcontextprotocol.kotlin.sdk.types.TextContent
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -16,6 +17,7 @@ enum class ErrorCode(val code: String) {
     AlreadyAttached("already_attached"),
     VmRunning("vm_running"),
     VmPaused("vm_paused"),
+    VmBusy("vm_busy"),
     AbsentLocalVariables("absent_local_variables"),
     CapabilityUnavailable("capability_unavailable"),
     InvalidTarget("invalid_target"),
@@ -73,9 +75,29 @@ fun toolErr(
  * adb forward, and resets state) and translate it to the structured `vm_disconnected`
  * error so the agent gets a clear "rerun /android-debugger:attach" hint instead of an
  * opaque JDI stack.
+ *
+ * Per R-01 (v1.1.0 review): every tool body runs under [Session.mutex] so JDI calls are
+ * serialized. JDI is not thread-safe across event handling, and the architecture spec
+ * promises tool-level serialization. The mutex is acquired with a short timeout via
+ * [tryAcquireMutex]; a busy mutex returns a structured [ErrorCode.VmBusy] reply rather
+ * than blocking the coroutine pool indefinitely. [Evaluator] uses its own private mutex
+ * inside the JDI thread context so there is no recursion against this outer lock.
  */
-inline fun runTool(block: () -> CallToolResult): CallToolResult = try {
-    block()
+suspend inline fun runTool(crossinline block: suspend () -> CallToolResult): CallToolResult = try {
+    val acquired = Session.mutex.tryAcquireWithTimeout(MUTEX_ACQUIRE_TIMEOUT_MS)
+    if (!acquired) {
+        toolErr(
+            code = ErrorCode.VmBusy,
+            message = "Another tool call is currently holding the JDI session lock.",
+            hint = "Wait for the in-flight call to finish, or check connection_status.",
+        )
+    } else {
+        try {
+            block()
+        } finally {
+            Session.mutex.unlock()
+        }
+    }
 } catch (e: ToolError) {
     toolErr(
         code = e.errorCode,
@@ -95,4 +117,22 @@ inline fun runTool(block: () -> CallToolResult): CallToolResult = try {
         code = ErrorCode.Internal,
         message = e.message ?: e::class.simpleName ?: "unknown error",
     )
+}
+
+/**
+ * Mutex acquisition timeout for [runTool]. Long enough that a typical JDI operation
+ * (step, snapshot, evaluate) finishes; short enough that a wedged session reports
+ * `vm_busy` rather than hanging the MCP coroutine pool. Per R-01.
+ */
+const val MUTEX_ACQUIRE_TIMEOUT_MS: Long = 30_000L
+
+/**
+ * Try to acquire the mutex within [timeoutMs]. Returns `true` on success, `false` if
+ * the timeout elapsed first. Implemented with [withTimeoutOrNull] so we don't busy-wait.
+ */
+suspend fun kotlinx.coroutines.sync.Mutex.tryAcquireWithTimeout(timeoutMs: Long): Boolean {
+    return withTimeoutOrNull(timeoutMs) {
+        lock()
+        true
+    } ?: false
 }

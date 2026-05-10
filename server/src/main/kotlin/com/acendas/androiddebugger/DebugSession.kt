@@ -171,6 +171,12 @@ open class DebugSession {
         // Stop the event loop + ANR watchdog before nulling out the channel — otherwise
         // the pump can race a half-disposed VM and emit noise. Best-effort everywhere.
         runCatching { stopEventLoop() }
+        // HACK: re-evaluate when the MCP SDK ships proper suspend handlers and we can
+        // expose a suspend variant of handleDisconnect. handleDisconnect is invoked from
+        // [runTool]'s VMDisconnectedException catch (which is now a suspend context, so
+        // it could in principle be a suspend) and from the JVM shutdown hook (which is
+        // a plain Thread and cannot suspend). Keep `runBlocking` here for the shutdown
+        // path. Per R-03.
         runCatching { anrWatchdog?.let { runBlocking { it.stop() } } }
         // We don't dispose() the VM here — the JDI side already saw the disconnect, and
         // calling dispose on a dead VM throws.
@@ -204,9 +210,10 @@ open class DebugSession {
         eventLoopJob = null
         eventChannel = null
         if (loop != null) {
-            // We only invoke this from non-suspending tool boundaries (detach is
-            // synchronous from MCP's POV). runBlocking is safe here — we're not
-            // inside a coroutine context that can't tolerate it.
+            // HACK: re-evaluate when the MCP SDK ships proper suspend handlers — this is
+            // called from `detach` (suspend-friendly) and from the JVM shutdown hook
+            // (plain Thread, cannot suspend), so we currently keep `runBlocking` for the
+            // shutdown path. Per R-03.
             runCatching { runBlocking { loop.stop() } }
         }
         channel?.close()
@@ -225,12 +232,16 @@ open class DebugSession {
             state = SessionState.DETACHING
             // Stop the event loop BEFORE disposing the VM — otherwise the pump
             // races a half-disposed VM and emits noise. Per Task 4.1.3 wiring rule.
+            // HACK: re-evaluate when the MCP SDK ships proper suspend handlers — detach
+            // is called from a suspend tool body but also from the JVM shutdown hook
+            // which cannot suspend, so `runBlocking` stays for now. Per R-03.
             runCatching { anrWatchdog?.let { runBlocking { it.stop() } } }
             stopEventLoop()
             runCatching { vm?.dispose() }
         } else {
             // Defensive: event loop should not be running when not attached, but
             // make sure we don't leak coroutine state on a re-entrant detach.
+            // HACK: re-evaluate when the MCP SDK ships proper suspend handlers. Per R-03.
             runCatching { anrWatchdog?.let { runBlocking { it.stop() } } }
             stopEventLoop()
         }

@@ -13,6 +13,10 @@ import kotlinx.serialization.json.put
  */
 object Capabilities {
 
+    @Suppress("DEPRECATION") // canAddMethod / canUnrestrictedlyRedefineClasses are
+    // deprecated since JDK 9 but we still expose them in the probe map — both are
+    // always false on ART, but keeping the keys preserves the agent-facing schema and
+    // documents the negative answer. Per R-18.
     fun probe(vm: VirtualMachine): JsonObject = buildJsonObject {
         put("field_modification_watchpoints", vm.canWatchFieldModification())
         put("field_access_watchpoints", vm.canWatchFieldAccess())

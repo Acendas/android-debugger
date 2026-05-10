@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "com.acendas.androiddebugger"
-version = "1.1.0"
+version = "1.1.1"
 
 repositories {
     mavenCentral()
@@ -33,6 +33,11 @@ dependencies {
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
     // Mockito for mocking JDI interfaces (ThreadReference etc.) — used by AnrWatchdog
     // unit tests. Per Story 7.1.3.
+    //
+    // R-28: works fine on the JDK 17 toolchain. If the toolchain bumps to JDK 21+
+    // and tests start failing with `InaccessibleObjectException`, mockito-core needs
+    // `--add-opens=java.base/java.lang=ALL-UNNAMED` (and friends) on the test JVM.
+    // We don't run on 21+ today; documenting here so the trip wire is set.
     testImplementation("org.mockito:mockito-core:5.14.2")
 }
 
@@ -80,9 +85,72 @@ tasks.named<com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar>("shadowJ
     }
     // Drop the jar into ../dist so `.mcp.json` can reference ${CLAUDE_PLUGIN_ROOT}/dist/...
     destinationDirectory.set(file("$projectDir/../dist"))
+
+    // Per R-09: the MCP SDK 0.12.0 transitively pulls in ktor for HTTP / WebSocket /
+    // SSE transports. We only use [StdioServerTransport], so excluding those classes
+    // shaves several MB off the fat jar without changing runtime behavior. Smoke-tested
+    // post-build by sending an `initialize` request and confirming a JSON-RPC reply.
+    //
+    // We exclude by file pattern (works against the merged shadow content) rather than
+    // by Gradle dependency() matcher — the latter requires a tight artifact-name match
+    // and silently no-ops when a transitive jar's classifier (e.g. `-jvm`) keeps it
+    // alive.
+    exclude("io/ktor/client/**")
+    exclude("io/ktor/server/**")
+    exclude("io/ktor/network/**")
+    exclude("io/ktor/websocket/**")
+    exclude("io/ktor/websockets/**")
+    exclude("io/ktor/sse/**")
+    exclude("io/ktor/http/cio/**")
+    exclude("io/ktor/serialization/**")
+    exclude("io/ktor/events/**")
+    // Streamable HTTP and SSE MCP transports we don't use — we only wire StdioServerTransport.
+    exclude("io/modelcontextprotocol/kotlin/sdk/client/**")
+    exclude("io/modelcontextprotocol/kotlin/sdk/server/StreamableHttp*")
+    exclude("io/modelcontextprotocol/kotlin/sdk/server/SseServerTransport*")
+    // jansi ships native libs for every OS/arch under the sun. We don't use jansi for
+    // anything (slf4j-simple writes plain stderr); drop the native bundles. Doesn't
+    // affect runtime because nothing in our stack invokes the Jansi loader.
+    exclude("org/fusesource/jansi/internal/native/**")
+    // kotlin-reflect is transitively pulled in by the MCP SDK but our code never
+    // performs reflection at runtime. The Anthropic SDK builds its tool registry from
+    // schemas we hand it directly (ToolSchema with explicit JSON), not via KClass
+    // introspection. Smoke test (initialize + tools/list + a tool call) confirms the
+    // server boots and answers without kotlin-reflect on the classpath.
+    exclude("kotlin/reflect/jvm/internal/**")
+    exclude("kotlin/reflect/full/**")
 }
 
 // Make the default `build` task produce the shadow jar in dist/.
 tasks.named("build") {
     dependsOn("shadowJar")
+}
+
+// Per R-29: regression-test jar size. Fails the build if the fat jar grows beyond the
+// threshold so we don't silently re-bloat after R-09.
+val maxFatJarBytes: Long = 10L * 1024L * 1024L // 10 MB
+
+tasks.register("checkJarSize") {
+    description = "Fail the build if the shaded fat jar exceeds the configured size cap."
+    group = "verification"
+    dependsOn("shadowJar")
+    doLast {
+        val jar = file("$projectDir/../dist/android-debugger-server.jar")
+        if (!jar.exists()) {
+            throw GradleException("Expected fat jar not found at ${jar.absolutePath}")
+        }
+        val size = jar.length()
+        val mb = size / 1024.0 / 1024.0
+        logger.lifecycle("android-debugger-server.jar: %.2f MB (cap %.2f MB)".format(mb, maxFatJarBytes / 1024.0 / 1024.0))
+        if (size > maxFatJarBytes) {
+            throw GradleException(
+                "Fat jar is ${'$'}size bytes, exceeds cap of ${'$'}maxFatJarBytes. " +
+                    "Trim shadowJar `dependencies { exclude(...) }` or raise the cap with intent."
+            )
+        }
+    }
+}
+
+tasks.named("check") {
+    dependsOn("checkJarSize")
 }
