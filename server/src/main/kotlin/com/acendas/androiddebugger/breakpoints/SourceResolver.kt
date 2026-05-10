@@ -27,16 +27,23 @@ object SourceResolver {
      * locations (e.g., one for the outer class plus one per inline-lambda nested class).
      *
      * The breakpoint manager creates a `BreakpointRequest` for each returned location.
+     *
+     * **Performance.** `vm.allClasses()` returns 30k+ classes on a real Android app and
+     * each `sourceName()` call is a JDWP round-trip over adb (~1–5ms). A naive
+     * `classes.filter { sourceName() == file }` therefore freezes the whole MCP server
+     * for 30–150 seconds while `Session.mutex` is held. We sidestep that with a
+     * cheap class-name pre-filter: `type.name()` is cached locally by the JDI client
+     * and doesn't round-trip, so we can use it to discard 99.9% of classes before
+     * paying the `sourceName()` cost. The pre-filter accepts any class whose simple
+     * name (after `.` and before `$`) matches one of the candidate names derived
+     * from the source filename — handles Kotlin file-level facades (`MyFileKt`),
+     * top-level classes (`MyFile`), and their inner / lambda-synthetic descendants.
      */
     fun resolve(vm: VirtualMachine, file: String, line: Int): List<Location> {
         val out = mutableListOf<Location>()
-        // allClasses() is the cheap path; we don't pre-filter by source name because
-        // sourceName() can throw AbsentInformationException and we'd lose Kotlin lambdas
-        // whose declaring class has a different source-name than the user typed.
-        val classes: List<ReferenceType> = try { vm.allClasses() } catch (_: Throwable) { return out }
-
-        // First pass: classes whose own sourceName matches the requested file.
-        val direct = classes.filter { type -> sourceMatches(type, file) }
+        val candidates = candidateClasses(vm, file)
+        // First pass: candidates whose own sourceName actually matches the requested file.
+        val direct = candidates.filter { type -> sourceMatches(type, file) }
         for (type in direct) {
             out += locationsFor(type, line)
             for (nested in nestedTypesRecursive(type)) {
@@ -51,9 +58,31 @@ object SourceResolver {
     }
 
     /** Find currently-loaded reference types whose source file matches [file]. */
-    fun classesForFile(vm: VirtualMachine, file: String): List<ReferenceType> {
+    fun classesForFile(vm: VirtualMachine, file: String): List<ReferenceType> =
+        candidateClasses(vm, file).filter { sourceMatches(it, file) }
+
+    /**
+     * Cheap class-name pre-filter. Derives candidate simple names from [file]
+     * (`"MainActivity.kt"` → `["MainActivity", "MainActivityKt"]`) and only returns
+     * classes whose own simple name (post-`.`, pre-`$`) matches. `type.name()` is
+     * locally cached so this iterates `vm.allClasses()` without any JDWP traffic.
+     *
+     * The follow-up `sourceMatches` filter then pays the JDWP cost only on the
+     * surviving handful of classes — typically <50 instead of 30k+.
+     */
+    private fun candidateClasses(vm: VirtualMachine, file: String): List<ReferenceType> {
         val classes: List<ReferenceType> = try { vm.allClasses() } catch (_: Throwable) { return emptyList() }
-        return classes.filter { sourceMatches(it, file) }
+        val base = file.substringAfterLast('/').substringBeforeLast('.')
+        if (base.isBlank()) return emptyList()
+        // Candidate simple names cover top-level classes, Kotlin file-level facades, and
+        // anonymous/inner classes synthesized for inline-fn lambdas.
+        val names = setOf(base, "${base}Kt")
+        return classes.filter { type ->
+            val name = try { type.name() } catch (_: Throwable) { return@filter false }
+            // Strip the package prefix and any inner-class suffix to get the simple name.
+            val simple = name.substringAfterLast('.').substringBefore('$')
+            simple in names
+        }
     }
 
     /**
@@ -123,7 +152,11 @@ object SourceResolver {
     }
 
     private fun sourceMatches(type: ReferenceType, file: String): Boolean = try {
-        type.sourceName() == file
+        // JDI's `sourceName()` always returns the file basename (e.g. "MainActivity.kt"),
+        // never a path. The user's `file` argument might be either, so normalize to
+        // basename before comparing — otherwise `src/main/java/.../MainActivity.kt`
+        // will never match the JDI-reported `MainActivity.kt`.
+        type.sourceName() == file.substringAfterLast('/')
     } catch (_: AbsentInformationException) {
         false
     } catch (_: Throwable) {
