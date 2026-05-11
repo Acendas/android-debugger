@@ -20,3 +20,8 @@ Thumbs.db
 
 # IMPORTANT: dist/android-debugger-server.jar is INTENTIONALLY committed.
 # It's the shipped server binary; rebuild with `cd server && ./gradlew shadowJar`.
+
+# v1.4 — CMake intermediates for the JVMTI agent. The OUTPUT (.so files at
+# dist/agents/<abi>/libamdb_agent.so) is committed; the intermediates under
+# agent/build/ are not. Rebuild with `./agent/build.sh` or `./gradlew assembleAgent`.
+agent/build/

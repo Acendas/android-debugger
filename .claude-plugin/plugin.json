@@ -1,7 +1,7 @@
 {
   "name": "android-debugger",
-  "version": "1.3.1",
-  "description": "AI-agent-driven Android debugger — exposes JDI/JDWP as MCP tools for Claude Code to drive. Set/conditional/hit-count/logpoint/exception/method/field/class-load breakpoints, watches, step over/into/out, evaluate DMN-FEEL expressions (kfeel-backed), inspect frames + locals + objects, persist breakpoint state across detach. Backed by a Kotlin MCP server using JDI (Java Debug Interface) over JDWP via adb forward. Designed for AI agents, not humans — every tool surface optimizes for agent legibility. Cross-platform: macOS, Linux, Windows.",
+  "version": "1.4.0",
+  "description": "AI-agent-driven Android debugger — exposes JDI/JDWP and a v1.4 JVMTI agent as MCP tools for Claude Code to drive. Set/conditional/hit-count/logpoint/exception/method/field/class-load breakpoints, watches, step over/into/out, evaluate DMN-FEEL expressions (kfeel-backed), inspect frames + locals + objects, persist breakpoint state across detach. v1.4 loads a small C++ JVMTI agent (arm64-v8a + x86_64 + armeabi-v7a) into the target app via `cmd activity attach-agent`, exposing ART's full capability surface via the new `agent_info` MCP tool — gateway for v1.5 HotSwap and v1.6 native-speed heap walks. Backed by a Kotlin MCP server using JDI (Java Debug Interface) over JDWP via adb forward. Designed for AI agents, not humans — every tool surface optimizes for agent legibility. Cross-platform: macOS, Linux, Windows.",
   "author": {
     "name": "Acendas",
     "email": "info@acendas.ca"
@@ -33,6 +33,11 @@
     "kfeel",
     "session-persistence",
     "class-load-breakpoint",
+    "jvmti",
+    "jvmti-agent",
+    "hot-swap",
+    "redefine-classes",
+    "ndk",
     "acendas"
   ],
   "tags": [

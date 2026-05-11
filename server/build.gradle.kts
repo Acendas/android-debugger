@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "com.acendas.androiddebugger"
-version = "1.3.1"
+version = "1.4.0"
 
 repositories {
     mavenCentral()
@@ -134,9 +134,53 @@ tasks.named("build") {
     dependsOn("shadowJar")
 }
 
+// Per v1.4 — wrap the agent's CMake build (`agent/build.sh`) in a Gradle Exec
+// task so `./gradlew assembleAgent` is the canonical maintainer invocation.
+// The build script handles ABI loop, NDK resolution, and copy-to-dist. We just
+// shell to it. Per D3 — plain CMake invoked from a Gradle Exec task; no AGP
+// dependency keeps the build transparent and decoupled from the JDK toolchain.
+tasks.register<Exec>("assembleAgent") {
+    description = "Build the JVMTI agent (libamdb_agent.so) for every shipped ABI."
+    group = "build"
+    workingDir = file("$projectDir/..")
+    val isWindows = System.getProperty("os.name").lowercase().contains("windows")
+    if (isWindows) {
+        commandLine("cmd", "/c", "bash", "agent/build.sh")
+    } else {
+        commandLine("bash", "agent/build.sh")
+    }
+}
+
+// Verify the agent .so files exist for every ABI we ship. Fails fast if a
+// release is cut without the agents present (cmd: rebuild via `assembleAgent`).
+tasks.register("checkAgents") {
+    description = "Verify dist/agents/<abi>/libamdb_agent.so exists for every shipped ABI."
+    group = "verification"
+    doLast {
+        val abis = listOf("arm64-v8a", "x86_64", "armeabi-v7a")
+        val missing = mutableListOf<String>()
+        for (abi in abis) {
+            val agent = file("$projectDir/../dist/agents/$abi/libamdb_agent.so")
+            if (!agent.exists()) {
+                missing.add(agent.absolutePath)
+            } else {
+                logger.lifecycle("libamdb_agent ($abi): %.2f KB".format(agent.length() / 1024.0))
+            }
+        }
+        if (missing.isNotEmpty()) {
+            throw GradleException(
+                "Missing agent .so files for ${missing.size}/${abis.size} ABIs:\n" +
+                    missing.joinToString("\n") { "  - $it" } +
+                    "\nRun `./gradlew assembleAgent` to rebuild."
+            )
+        }
+    }
+}
+
 // Per R-29: regression-test jar size. Fails the build if the fat jar grows beyond the
-// threshold so we don't silently re-bloat after R-09.
-val maxFatJarBytes: Long = 10L * 1024L * 1024L // 10 MB
+// threshold so we don't silently re-bloat after R-09. Cap raised 10 MB → 20 MB in
+// v1.4 to absorb the agent .so files (~660 KB total) plus headroom for v1.5+.
+val maxFatJarBytes: Long = 20L * 1024L * 1024L // 20 MB (was 10 MB pre-v1.4)
 
 tasks.register("checkJarSize") {
     description = "Fail the build if the shaded fat jar exceeds the configured size cap."

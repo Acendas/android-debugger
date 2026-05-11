@@ -6,6 +6,15 @@ If you want a human IDE-style debugger, use Android Studio. If you want Claude C
 
 Backed by a Kotlin MCP server using JDI (Java Debug Interface) over JDWP. Works on **macOS, Linux, and Windows**.
 
+## v1.4 highlights
+
+- **JVMTI agent foundation.** A small C++ agent (~250 KB per ABI, fully stripped) loads into the target app via `cmd activity attach-agent` and exposes ART's JVMTI surface — `can_redefine_classes`, `can_retransform_classes`, `can_tag_objects`, etc. Auto-loaded on every `attach` by default; opt out with `attach({ load_agent: false })`. Live capability map returned in the attach response and via the new `agent_info` MCP tool.
+- **No user-visible v1.4 feature beyond `agent_info`.** This release is plumbing. v1.5 layers HotSwap on top (`hot_swap_class` via JVMTI `RedefineClasses` — Apply-Changes-style edit-and-continue). v1.6 routes heap walks (`find_referrers`, `count_instances`) through the agent for 10–100× speedups on big heaps.
+- **ABIs**: `arm64-v8a`, `x86_64`, `armeabi-v7a`. Pre-built `.so` files checked into `dist/agents/<abi>/libamdb_agent.so` — most users never need NDK.
+- **Crash diagnostics.** Signal handlers write `/data/data/<package>/cache/amdb_agent_crash.txt` on agent crash (SIGSEGV/SIGABRT/SIGBUS/SIGILL/SIGFPE) with the faulting PC + last RPC method. The Kotlin server picks it up on next attach and surfaces `crashed_last_session` in the warnings.
+- **Studio coexistence guard.** Probes `/proc/<pid>/maps` for known Android Studio Apply-Changes agent artifacts (`libperfa`, `studio_profiler`, etc.); refuses with `agent_conflict` rather than fighting Studio for control.
+- **Strict protocol versioning.** First message on the agent socket MUST be `{method: hello, params: {protocol_version: 1}}`. Mismatch returns `agent_version_mismatch`. Forward-compatible — v1.5+ agents will negotiate higher protocol versions.
+
 ## v1.3 highlights
 
 - **kfeel-backed `evaluate` tool.** Pure-FEEL expression engine ([ca.acendas:kfeel](https://github.com/Acendas/kfeel)) — binary ops, ternary `if/then/else`, `instance of`, list comprehensions (`every x in items satisfies x > 0`), ranges (`score in [1..100]`), three-valued null logic. Property access on pre-resolved object trees works without a JDI round-trip per `.` — `FeelContextBuilder` walks instance fields to depth 3 at context-build time. String literals use **single quotes** (`'hello'`) per the FEEL spec.
@@ -98,6 +107,20 @@ The agent attaches, triages the goal (crash / behavior / flaky / onboarding), ru
 
 The server only listens on `localhost` — adb's port forward binds there, and JDI never opens a public socket. Logging goes to stderr; stdout is reserved for the MCP transport.
 
+## JVMTI agent (v1.4+)
+
+v1.4 adds a small C++ agent that loads INTO the target app process via `cmd activity attach-agent`. The agent exposes a Unix abstract-namespace socket (`@android-debugger-<package>`) that the Kotlin MCP server connects to over an `adb forward localfilesystem:<host> localabstract:<abstract>` channel. Wire protocol: line-delimited JSON-RPC 2.0 with strict-v1 protocol-version handshake.
+
+**Why the agent matters**: JDI/JDWP gives us a great read surface but a tiny write surface (`setLocal`, `setField`, `invokeMethod` only). The JVMTI agent unlocks more: `RedefineClasses` for HotSwap (v1.5), faster heap walks via `IterateThroughHeap` (v1.6), native-speed method-entry/exit events without JDWP's `addClassFilter` overhead.
+
+**Lifetime**: the agent loads once per app process and stays loaded until the process dies. JVMTI doesn't support agent unload, so `:detach` only closes the IPC socket. Re-attaching to the same app process reuses the running agent via a fresh socket. If the app's process gets killed and respawns (common on memory-constrained devices like automotive/embedded SOMs), the next attach pushes the `.so` and loads the agent fresh.
+
+**Requirements**: Android 8 (API 26) or newer — JVMTI on ART was introduced in Oreo. Below that, agent load fails cleanly and JDI continues to work standalone.
+
+**Security note**: the agent's abstract-namespace socket is reachable by any process on the device that knows the name. Android's app sandbox restricts cross-UID access, but `userdebug`/`eng` builds (typical for embedded dev boards) are more permissive. **Do not run android-debugger on a device you don't control.** v1.5 may add token authentication once HotSwap raises the stakes.
+
+To verify the agent loaded: `/android-debugger:agent_info`. To opt out: `attach({ load_agent: false })`.
+
 ## Troubleshooting
 
 **`adb_status: not_found`** — set `ADB_PATH`, `ANDROID_HOME`, or add adb to PATH. macOS: `brew install --cask android-platform-tools`. Linux: `apt install android-tools-adb`. Windows: install Android Studio.
@@ -118,12 +141,27 @@ The server only listens on `localhost` — adb's port forward binds there, and J
 
 **Persistence file not appearing in `$CLAUDE_PLUGIN_DATA/android-debugger/sessions/`** — your Claude Code version may not propagate `CLAUDE_PLUGIN_DATA` to MCP subprocesses. v1.3 logs a single line ("CLAUDE_PLUGIN_DATA is unset; persistence disabled") at first save attempt — check the server log via `connection_status`. Functionality is unaffected; the agent just re-adds breakpoints each session.
 
+**`code: agent_push_failed`** (v1.4) — both `/data/local/tmp/` and `/data/data/<package>/code_cache/` failed to receive the agent `.so`. Confirm the app is built debuggable and that `adb shell run-as <package>` works for your user. On strict-SELinux devices, run-as may require the app's build.gradle to explicitly enable JDWP.
+
+**`code: agent_attach_failed`** (v1.4) — `cmd activity attach-agent` rejected the load. If the stderr mentions "not debuggable", rebuild the app as a debug variant. If it mentions "could not load", the device's SELinux blocked the load — try the fallback path (the launcher does this automatically but some custom builds need extra policy).
+
+**`code: agent_conflict`** (v1.4) — Android Studio's Apply Changes agent is already in the target process. Detach Studio's debugger first.
+
+**`code: agent_in_use`** (v1.4) — another Claude Code session is already attached to the same app. Detach it first, or force-stop the app to clear the abstract socket.
+
+**`code: agent_version_mismatch`** (v1.4) — the loaded agent uses an older protocol than the Kotlin server expects. This shouldn't happen for fresh installs but can occur if the app process was kept alive across a plugin upgrade. Force-stop the app and re-attach.
+
+**`code: agent_handshake_timeout`** (v1.4) — the agent loaded but its socket didn't come up within 5 s. Most often a SELinux issue (the `.so` loaded but the abstract-namespace socket couldn't bind). Check `adb logcat -s amdb_agent:V` for the listener's bind output. If the agent crashed during a prior session, `agent_info` will surface `crashed_last_session` with the faulting PC.
+
 ## Building from source
 
 ```
 cd server
 ./gradlew shadowJar
+./gradlew assembleAgent     # v1.4 — rebuild dist/agents/<abi>/libamdb_agent.so
 ```
+
+The agent has its own build path; see `agent/README.md` for NDK / CMake details.
 
 The fat jar lands at `dist/android-debugger-server.jar` and is committed to the repo so users don't need a build step. See `CONTRIBUTING.md` for the end-to-end test loop against a public sample Android app.
 

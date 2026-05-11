@@ -125,6 +125,16 @@ open class DebugSession {
     /** ANR watchdog instance — runs while attached, watches main-thread suspend duration. */
     @Volatile var anrWatchdog: com.acendas.androiddebugger.events.AnrWatchdog? = null
 
+    /**
+     * v1.4 — JVMTI agent state if loaded for this session, else null. Carries the
+     * capability map, host socket path, and crash-record info for the next
+     * [com.acendas.androiddebugger.tools.AgentTools] `agent_info` call.
+     */
+    @Volatile var agentState: com.acendas.androiddebugger.jvmti.AgentState? = null
+
+    /** v1.4 — open JSON-RPC client over the agent's Unix socket. Closed in [reset]. */
+    @Volatile var agentClient: com.acendas.androiddebugger.jvmti.AgentClient? = null
+
     /** Bump after any operation that changed the VM's run/pause state or frame stack. */
     fun bumpVmStateVersion(): Long {
         // Any state change invalidates the snapshot cache. Per Task 2.1.2.3.
@@ -163,6 +173,13 @@ open class DebugSession {
         eventChannel = null
         anrWatchdog = null
         socketWedgeRecovery = null
+        // v1.4 — close the agent IPC socket but DON'T attempt to unload the
+        // agent (JVMTI doesn't support unload). The agent stays loaded in the
+        // app process until the process dies. Next attach to the same app
+        // reuses it via a fresh socket connection.
+        runCatching { agentClient?.close() }
+        agentClient = null
+        agentState = null
     }
 
     /**

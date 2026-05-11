@@ -26,6 +26,8 @@ object Tools {
         com.acendas.androiddebugger.tools.BreakpointTools.register(server)
         com.acendas.androiddebugger.tools.WatchTools.register(server)
         com.acendas.androiddebugger.tools.AndroidTools.register(server)
+        // v1.4 — JVMTI agent tools (agent_info, future v1.5+ hot_swap_class, etc.).
+        com.acendas.androiddebugger.tools.AgentTools.register(server)
     }
 
     private fun registerServerInfo(server: Server) {

@@ -240,7 +240,12 @@ object LifecycleTools {
             description = "Attach the debugger to a running, debuggable Android app via JDWP. " +
                 "Specify the target by `pid` or `package` (pid wins). On success returns session info, " +
                 "ART version, capability probe map, and any warnings (e.g., release-build detection). " +
-                "The agent should read `capabilities` and avoid requesting features the device doesn't support.",
+                "The agent should read `capabilities` and avoid requesting features the device doesn't support. " +
+                "**v1.4**: by default (`load_agent: true`) ALSO loads the JVMTI agent into the target app " +
+                "via `cmd activity attach-agent`. The response includes an `agent: { loaded, version, " +
+                "capabilities }` block. Agent load failures are non-fatal — they land in `warnings` and " +
+                "the JDI session works without the agent. Pass `load_agent: false` to skip (faster attach, " +
+                "no HotSwap available).",
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
                     putJsonObject("serial") {
@@ -254,6 +259,24 @@ object LifecycleTools {
                     putJsonObject("package") {
                         put("type", "string")
                         put("description", "Application package, e.g. com.example.app. Resolves to its single PID.")
+                    }
+                    putJsonObject("load_agent") {
+                        put("type", "boolean")
+                        put(
+                            "description",
+                            "Load the v1.4 JVMTI agent into the target app via `cmd activity attach-agent`. " +
+                                "Default true. Adds ~2-3 s to first attach (subsequent attaches in the same " +
+                                "app process reuse the loaded agent — JVMTI doesn't support unload). Failures " +
+                                "are non-fatal: they land in `warnings`.",
+                        )
+                    }
+                    putJsonObject("agent_verbose") {
+                        put("type", "boolean")
+                        put(
+                            "description",
+                            "Pass verbose=1 to the agent so it logs each RPC. Default false (quiet). " +
+                                "Useful when diagnosing the agent itself.",
+                        )
                     }
                 },
             ),
@@ -271,6 +294,8 @@ object LifecycleTools {
                 val serialArg = (request.arguments?.get("serial") as? JsonPrimitive)?.contentOrNull
                 val pidArg = (request.arguments?.get("pid") as? JsonPrimitive)?.intOrNull
                 val pkgArg = (request.arguments?.get("package") as? JsonPrimitive)?.contentOrNull
+                val loadAgent = (request.arguments?.get("load_agent") as? JsonPrimitive)?.booleanOrNull ?: true
+                val agentVerbose = (request.arguments?.get("agent_verbose") as? JsonPrimitive)?.booleanOrNull ?: false
 
                 val resolvedSerial = resolveSerial(serialArg)
                 val targetPid = resolveTargetPid(resolvedSerial, pidArg, pkgArg)
@@ -343,16 +368,59 @@ object LifecycleTools {
                         watchdog.start()
                     }
                 }
-                val warnings = buildJsonArray {
-                    if (Capabilities.isLikelyReleaseBuild(vm)) {
-                        add(buildJsonObject {
-                            put("type", "release_build_likely")
-                            put(
-                                "hint",
-                                "Most user classes have stripped local-variable info. Rebuild as a debug variant " +
-                                    "to see locals on paused frames.",
-                            )
-                        })
+                val warnings = mutableListOf<kotlinx.serialization.json.JsonObject>()
+                if (Capabilities.isLikelyReleaseBuild(vm)) {
+                    warnings += buildJsonObject {
+                        put("type", "release_build_likely")
+                        put(
+                            "hint",
+                            "Most user classes have stripped local-variable info. Rebuild as a debug variant " +
+                                "to see locals on paused frames.",
+                        )
+                    }
+                }
+
+                // v1.4 — load the JVMTI agent (per D10 default-on). Failures are
+                // non-fatal: they surface in `warnings`, not as a tool error.
+                // JDI works without the agent; the agent unlocks v1.5+ features.
+                var agentLoaded = false
+                if (loadAgent && resolvedSerial != null && pkg != null) {
+                    try {
+                        val agentState = com.acendas.androiddebugger.jvmti.JvmtiAgentLauncher.launch(
+                            adb = Session.adb,
+                            serial = resolvedSerial,
+                            pid = targetPid,
+                            packageName = pkg,
+                            verbose = agentVerbose,
+                        )
+                        agentLoaded = true
+                        if (agentState.crashedLastSession != null) {
+                            warnings += buildJsonObject {
+                                put("type", "agent_crashed_last_session")
+                                val c = agentState.crashedLastSession
+                                put("signal", c.signal ?: "unknown")
+                                c.pc?.let { put("pc", it) }
+                                c.lastRpcMethod?.let { put("last_rpc_method", it) }
+                                put(
+                                    "hint",
+                                    "The JVMTI agent crashed during a prior session in this app process. " +
+                                        "The new agent has been loaded; force-stop the app to start fresh.",
+                                )
+                            }
+                        }
+                    } catch (te: ToolError) {
+                        warnings += buildJsonObject {
+                            put("type", "agent_load_failed")
+                            put("code", te.errorCode.code)
+                            put("message", te.message ?: "unknown")
+                            te.hint?.let { put("hint", it) }
+                        }
+                    } catch (t: Throwable) {
+                        warnings += buildJsonObject {
+                            put("type", "agent_load_failed")
+                            put("code", "internal")
+                            put("message", t.message ?: t::class.simpleName ?: "unknown")
+                        }
                     }
                 }
 
@@ -392,7 +460,7 @@ object LifecycleTools {
                     put("vm_name", vm.name() ?: "")
                     put("jdwp_port", port)
                     put("capabilities", caps)
-                    put("warnings", warnings)
+                    put("warnings", buildJsonArray { for (w in warnings) add(w) })
                     if (restoredBreakpoints.isNotEmpty() || restoredWatches.isNotEmpty()) {
                         put(
                             "restored",
@@ -404,6 +472,19 @@ object LifecycleTools {
                                 }
                             },
                         )
+                    }
+                    // v1.4 — surface the agent state alongside JDI capabilities so the
+                    // agent (Claude) sees both surfaces in one response without a
+                    // second tool call.
+                    Session.agentState?.let { st ->
+                        put("agent", buildJsonObject {
+                            with(com.acendas.androiddebugger.tools.AgentTools) {
+                                renderAgentState(st)
+                            }
+                        })
+                    }
+                    if (!agentLoaded && loadAgent) {
+                        put("agent_load_attempted", true)
                     }
                 }
             }
