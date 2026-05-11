@@ -1,6 +1,6 @@
 {
   "name": "android-debugger",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "description": "AI-agent-driven Android debugger — exposes JDI/JDWP as MCP tools for Claude Code to drive. Set/conditional/hit-count/logpoint/exception/method/field/class-load breakpoints, watches, step over/into/out, evaluate DMN-FEEL expressions (kfeel-backed), inspect frames + locals + objects, persist breakpoint state across detach. Backed by a Kotlin MCP server using JDI (Java Debug Interface) over JDWP via adb forward. Designed for AI agents, not humans — every tool surface optimizes for agent legibility. Cross-platform: macOS, Linux, Windows.",
   "author": {
     "name": "Acendas",
