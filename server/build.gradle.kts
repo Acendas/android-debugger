@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "com.acendas.androiddebugger"
-version = "1.2.4"
+version = "1.3.0"
 
 repositories {
     mavenCentral()
@@ -25,6 +25,14 @@ dependencies {
     // Logging — slf4j + simple impl that writes to stderr (stdout is the MCP transport)
     implementation("org.slf4j:slf4j-api:2.0.16")
     implementation("org.slf4j:slf4j-simple:2.0.16")
+
+    // DMN 1.3 FEEL expression engine (zero-dep Kotlin, by Acendas). Powers the
+    // `evaluate` MCP tool's expression grammar — binary ops, ternary, instance of,
+    // list comprehensions, three-valued null logic, temporal types. Method calls on
+    // JDI references aren't standard FEEL grammar; we register `invoke(target,
+    // methodName, [args])` as the explicit escape hatch so mutation is grep-able by
+    // the consuming AI agent.
+    implementation("ca.acendas:kfeel:1.0.0")
 
     // JDI is bundled with the JDK at com.sun.jdi — no extra dependency needed.
     // It's added to the classpath via tools/lib in older JDKs; on JDK 9+ it lives in jdk.jdi module.

@@ -1,5 +1,5 @@
 package com.acendas.androiddebugger
 
 object BuildInfo {
-    const val VERSION = "1.2.4"
+    const val VERSION = "1.3.0"
 }

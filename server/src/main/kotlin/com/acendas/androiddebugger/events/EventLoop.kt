@@ -8,8 +8,8 @@ import com.acendas.androiddebugger.breakpoints.BreakpointMeta
 import com.acendas.androiddebugger.breakpoints.LogMessageRenderer
 import com.acendas.androiddebugger.breakpoints.LogpointBuffer
 import com.acendas.androiddebugger.inspection.Evaluator
-import com.acendas.androiddebugger.inspection.ExprParser
 import com.acendas.androiddebugger.inspection.ObjectIdMint
+import ca.acendas.kfeel.api.FeelValue
 import com.sun.jdi.AbsentInformationException
 import com.sun.jdi.BooleanValue
 import com.sun.jdi.PrimitiveValue
@@ -245,7 +245,24 @@ class EventLoop(
         // Class-prepare drives deferred breakpoint resolution. We resolve every meta
         // whose deferred-prepare-request matches this event, install BPs on the new
         // type, and surface the agent-facing event after.
+        //
+        // v1.3 — also handles user-facing CLASS_LOAD breakpoints (Phase C). Those
+        // attach their `ClassPrepareRequest` as a normal active-request (vs. the
+        // internal deferred ones), so a hit lands in `findByRequest` and we emit a
+        // proper `Stopped(reason="class_prepare", breakpoint_id=…)` instead of
+        // swallowing the pause.
         if (event is ClassPrepareEvent) {
+            val userBp = BreakpointManager.findByRequest(event.request())
+            if (userBp != null && userBp.kind == BreakpointKind.CLASS_LOAD) {
+                userBp.totalHits.incrementAndGet()
+                if (userBp.enabled) {
+                    userBp.deliveredStops.incrementAndGet()
+                    sendClassLoadStopped(event, userBp.id)
+                    markPausedFromClassPrepare(event)
+                    return Outcome.STOPPED
+                }
+                userBp.suppressedHits.incrementAndGet()
+            }
             handleClassPrepare(event)
             runCatching {
                 dispatch(DebugEvent.ClassPrepare(
@@ -471,23 +488,34 @@ class EventLoop(
 
     private fun evalCondition(condition: String, event: LocatableEvent): Boolean {
         return try {
-            val ast = ExprParser.parse(condition)
-            val v = Evaluator.evaluate(event.thread(), 0, ast)
-            when (v) {
-                is BooleanValue -> v.value()
-                null -> false
-                is PrimitiveValue -> {
-                    // Treat any non-zero numeric as true for permissiveness; the agent
-                    // should normally pass a boolean expression though.
-                    v.toString() != "0"
-                }
-                else -> true // Non-null object → truthy.
-            }
+            val v = Evaluator.evaluate(event.thread(), 0, condition)
+            feelTruthy(v)
         } catch (_: Throwable) {
             // Eval failure → surface the stop so the agent can investigate. Same
             // policy as IntelliJ: don't silently swallow on a broken condition.
             true
         }
+    }
+
+    /**
+     * FEEL value → truthy semantics for conditional breakpoints. FEEL's preferred form
+     * is an explicit boolean expression (`i > 100`), but we apply the same defensive
+     * coercion the v1.2 evaluator did so a misshapen condition still has a sensible
+     * fallback:
+     *  - [FeelValue.Boolean] → the value
+     *  - [FeelValue.Number] → non-zero is truthy
+     *  - [FeelValue.Null] → false
+     *  - [FeelValue.Text] → non-empty is truthy
+     *  - [FeelValue.List] → non-empty is truthy
+     *  - Anything else (Context / Range / Function / temporal) → truthy
+     */
+    private fun feelTruthy(v: FeelValue): Boolean = when (v) {
+        is FeelValue.Boolean -> v.value
+        FeelValue.Null -> false
+        is FeelValue.Number -> v.value.signum() != 0
+        is FeelValue.Text -> v.value.isNotEmpty()
+        is FeelValue.List -> v.elements.isNotEmpty()
+        else -> true
     }
 
     private fun sendStopped(reason: String, event: LocatableEvent, breakpointId: Int? = null) {
@@ -501,6 +529,34 @@ class EventLoop(
         // Per R-07: dispatch hands the event to the first matching listener registered
         // by [awaitEvent]; if none match, it falls back to the channel as a backstop.
         runCatching { dispatch(stopped) }
+    }
+
+    /**
+     * Emit a `Stopped` event for a user-facing CLASS_LOAD breakpoint (Phase C). The
+     * underlying [ClassPrepareEvent] is not a [LocatableEvent], so we hand-build the
+     * event payload instead of reusing the [sendStopped] overload.
+     */
+    private fun sendClassLoadStopped(event: ClassPrepareEvent, breakpointId: Int) {
+        val className = runCatching { event.referenceType().name() }.getOrDefault("")
+        val stopped = DebugEvent.Stopped(
+            reason = "class_prepare",
+            threadId = runCatching { event.thread().uniqueID() }.getOrNull(),
+            threadName = runCatching { event.thread().name() }.getOrNull(),
+            breakpointId = breakpointId,
+            location = if (className.isNotEmpty()) "class_prepare:$className" else null,
+        )
+        runCatching { dispatch(stopped) }
+    }
+
+    /** Mark paused from a class-prepare event — same accounting as the locatable path. */
+    private fun markPausedFromClassPrepare(event: ClassPrepareEvent) {
+        val thread = runCatching { event.thread() }.getOrNull()
+        Session.pausedThread = thread
+        Session.state = SessionState.ATTACHED_PAUSED
+        Session.bumpVmStateVersion()
+        if (thread != null) {
+            Session.stepBudget.reset(thread.uniqueID())
+        }
     }
 
     private fun markPaused(event: LocatableEvent) {

@@ -28,7 +28,7 @@ The bread-and-butter workflow. Every breakpoint hit, every step pause, every exc
 
 ## Anti-hallucination rules (load-bearing)
 
-Read `skills/explain/references/anti-hallucination.md` and follow the snapshot-grounding + evaluate-safety rules there. They apply doubly here since this skill is the canonical narrator of paused state — every other capability skill (`:catch`, `:trace`, `:walk`, `:bisect-flaky`) reads the same file. If you find yourself wanting to invent a value, use `evaluate` or `inspect_object`. If you find yourself wanting to call a setter via `evaluate`, ask the user first.
+Read `skills/explain/references/anti-hallucination.md` and follow the snapshot-grounding + evaluate-safety rules there. They apply doubly here since this skill is the canonical narrator of paused state — every other capability skill (`:catch`, `:trace`, `:walk`, `:bisect-flaky`) reads the same file. If you find yourself wanting to invent a value, use `evaluate` (pure DMN-FEEL, side-effect-refusing by grammar) or `inspect_object`. If you find yourself wanting to call a method on a JDI object, use `eval_method` — and ask the user first if the method looks like a mutator.
 
 ## What you do NOT do
 

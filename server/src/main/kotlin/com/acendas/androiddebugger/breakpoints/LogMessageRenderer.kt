@@ -1,21 +1,24 @@
 package com.acendas.androiddebugger.breakpoints
 
 import com.acendas.androiddebugger.inspection.Evaluator
-import com.acendas.androiddebugger.inspection.ExprParser
-import com.acendas.androiddebugger.inspection.ParseException
-import com.acendas.androiddebugger.inspection.ValueRenderer
+import com.acendas.androiddebugger.inspection.FeelValueRenderer
 import com.sun.jdi.ThreadReference
 
 /**
  * Render a logpoint's mini-template against a paused thread/frame.
  *
- * Template syntax: `"text {expr} more text {other.expr}"`. Each `{...}` is parsed by the
- * existing [ExprParser] and evaluated via [Evaluator] in the top frame of [thread]; the
- * rendered value (string form, no quotes) replaces the placeholder. Literal `{` is
- * escaped as `{{`; literal `}` as `}}`. An expression that fails to parse or evaluate
- * is replaced with `<error: ...>` so the logpoint never crashes a hot loop.
+ * Template syntax: `"text {expr} more text {other.expr}"`. Each `{...}` is a **FEEL
+ * expression** evaluated via the kfeel-backed [Evaluator] against the top frame of
+ * [thread]; the rendered value (string form, no quotes) replaces the placeholder.
+ * Literal `{` is escaped as `{{`; literal `}` as `}}`. An expression that fails to
+ * parse or evaluate is replaced with `<error: ...>` so the logpoint never crashes a
+ * hot loop.
  *
- * Per Story 3.1.4 / Task 3.1.4.2.
+ * **v1.3 syntax change**: placeholders are FEEL, not Java-style method calls. For
+ * method calls inside a logpoint template, capture the value in an `eval_method` call
+ * BEFORE setting the logpoint (or use a watch expression as a side channel).
+ *
+ * Per Story 3.1.4 / Task 3.1.4.2; revised for Story A.1.5 of the v1.3 plan.
  */
 object LogMessageRenderer {
 
@@ -74,7 +77,7 @@ object LogMessageRenderer {
      * Render [template] in the top frame of [thread]. Each `{...}` placeholder evaluates
      * via [Evaluator]; failures land as `<error: ...>` rather than throwing. The
      * returned string is bounded by the rendered-value length cap (200 chars per
-     * substitution, set by [ValueRenderer]); the overall message can be longer.
+     * substitution, set by [FeelValueRenderer]); the overall message can be longer.
      */
     fun render(template: String, thread: ThreadReference): String {
         val segments = parse(template)
@@ -90,20 +93,12 @@ object LogMessageRenderer {
 
     private fun renderOneExpr(expr: String, thread: ThreadReference): String {
         if (expr.isEmpty()) return ""
-        val ast = try {
-            ExprParser.parse(expr)
-        } catch (e: ParseException) {
-            return "<parse error: ${e.message}>"
-        } catch (e: Throwable) {
-            return "<parse error: ${e.message ?: e::class.simpleName}>"
-        }
-        val value = try {
-            Evaluator.evaluate(thread, frameIdx = 0, expr = ast)
+        val feel = try {
+            Evaluator.evaluate(thread, frameIdx = 0, expr = expr)
         } catch (e: Throwable) {
             return "<eval error: ${e.message ?: e::class.simpleName}>"
         }
-        // ValueRenderer gives us the same form locals/snapshot uses — bounded length, quoted strings, etc.
-        return ValueRenderer.render(value).rendered
+        return FeelValueRenderer.render(feel).rendered
     }
 
     sealed interface Segment {

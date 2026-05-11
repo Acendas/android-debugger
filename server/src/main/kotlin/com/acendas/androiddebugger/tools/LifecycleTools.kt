@@ -71,16 +71,134 @@ object LifecycleTools {
             name = "detach",
             description = "Disconnect the debugger from the attached app. Calls vm.dispose() (NOT exit), " +
                 "releases the adb forward, and resets state. Idempotent — safe to call when unattached. " +
-                "Always run this when finished — abandoned attachments leave the app suspended at the next breakpoint hit.",
-            inputSchema = ToolSchema(),
+                "Always run this when finished — abandoned attachments leave the app suspended at the next breakpoint hit. " +
+                "**v1.3 persistence**: by default, breakpoints and watches are saved to " +
+                "\$CLAUDE_PLUGIN_DATA/android-debugger/sessions/<serial>_<package>.json " +
+                "and rehydrated on the next attach to the same (serial, package). Pass `persist: false` " +
+                "to skip the save (useful for one-off sessions or to clear stale state — combine with " +
+                "deleting the file by hand).",
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    putJsonObject("persist") {
+                        put("type", "boolean")
+                        put(
+                            "description",
+                            "Save breakpoint + watch state for the next attach to this (serial, package). Default true.",
+                        )
+                    }
+                },
+            ),
             toolAnnotations = ToolAnnotations(readOnlyHint = false, openWorldHint = false),
-        ) {
+        ) { request ->
             runTool {
+                val persist = (request.arguments?.get("persist") as? JsonPrimitive)?.booleanOrNull ?: true
+                // Capture the persistable state BEFORE detach() clears it. Save only if we
+                // have a (serial, package) pair, were actually attached, and persist=true.
+                val serial = Session.serial
+                val packageName = Session.packageName
+                val savedBreakpoints = if (persist && serial != null && packageName != null && Session.vm != null) {
+                    com.acendas.androiddebugger.breakpoints.BreakpointManager.all().toList()
+                } else emptyList()
+                val savedWatches = if (persist && serial != null && packageName != null && Session.vm != null) {
+                    Session.watchManager.list().map { it.id to it.expr }
+                } else emptyList()
+
                 val result = Session.detach()
+
+                var persistedPath: String? = null
+                if (persist && serial != null && packageName != null && result.wasAttached &&
+                    (savedBreakpoints.isNotEmpty() || savedWatches.isNotEmpty())
+                ) {
+                    val path = com.acendas.androiddebugger.state.SessionPersistence.save(
+                        serial = serial,
+                        packageName = packageName,
+                        breakpoints = savedBreakpoints,
+                        watches = savedWatches,
+                    )
+                    persistedPath = path?.toString()
+                }
                 toolOk {
                     put("was_attached", result.wasAttached)
                     result.releasedPort?.let { put("released_port", it) }
+                    put("persisted", persistedPath != null)
+                    if (persistedPath != null) put("persisted_path", persistedPath)
+                    put("saved_breakpoints", savedBreakpoints.size)
+                    put("saved_watches", savedWatches.size)
                 }
+            }
+        }
+    }
+
+    /**
+     * Replay one persisted [SavedBreakpoint] against a freshly attached VM. Dispatches
+     * on the kind name and calls the same [BreakpointInstaller] entry points the
+     * `add_*_breakpoint` tools use. Throws if the kind is unknown or the install fails
+     * (the caller catches per-bp and logs into `restored.errors`).
+     */
+    private fun rehydrateBreakpoint(
+        vm: com.sun.jdi.VirtualMachine,
+        bp: com.acendas.androiddebugger.state.SessionPersistence.SavedBreakpoint,
+    ) {
+        val kind = com.acendas.androiddebugger.state.parseBreakpointKind(bp.kind)
+            ?: throw IllegalStateException("Unknown breakpoint kind `${bp.kind}` in saved session")
+        when (kind) {
+            com.acendas.androiddebugger.breakpoints.BreakpointKind.LINE -> {
+                val file = bp.file ?: throw IllegalStateException("LINE bp missing `file`")
+                val line = bp.line ?: throw IllegalStateException("LINE bp missing `line`")
+                com.acendas.androiddebugger.breakpoints.BreakpointInstaller.installLine(
+                    vm = vm,
+                    id = bp.id,
+                    file = file,
+                    line = line,
+                    condition = bp.condition,
+                    hitCount = bp.hitCount,
+                    logMessage = bp.logMessage,
+                    enabled = bp.enabled,
+                )
+            }
+            com.acendas.androiddebugger.breakpoints.BreakpointKind.EXCEPTION -> {
+                com.acendas.androiddebugger.breakpoints.BreakpointInstaller.installException(
+                    vm = vm,
+                    id = bp.id,
+                    exceptionClass = bp.exceptionClass,
+                    caught = bp.caught,
+                    uncaught = bp.uncaught,
+                    enabled = bp.enabled,
+                )
+            }
+            com.acendas.androiddebugger.breakpoints.BreakpointKind.METHOD_ENTRY -> {
+                val cls = bp.methodClass ?: throw IllegalStateException("METHOD_ENTRY missing `methodClass`")
+                val mn = bp.methodName ?: throw IllegalStateException("METHOD_ENTRY missing `methodName`")
+                com.acendas.androiddebugger.breakpoints.BreakpointInstaller.installMethodEntry(
+                    vm = vm, id = bp.id, methodClass = cls, methodName = mn, enabled = bp.enabled,
+                )
+            }
+            com.acendas.androiddebugger.breakpoints.BreakpointKind.METHOD_EXIT -> {
+                val cls = bp.methodClass ?: throw IllegalStateException("METHOD_EXIT missing `methodClass`")
+                val mn = bp.methodName ?: throw IllegalStateException("METHOD_EXIT missing `methodName`")
+                com.acendas.androiddebugger.breakpoints.BreakpointInstaller.installMethodExit(
+                    vm = vm, id = bp.id, methodClass = cls, methodName = mn, enabled = bp.enabled,
+                )
+            }
+            com.acendas.androiddebugger.breakpoints.BreakpointKind.FIELD_ACCESS,
+            com.acendas.androiddebugger.breakpoints.BreakpointKind.FIELD_MODIFICATION -> {
+                val cls = bp.fieldClass ?: throw IllegalStateException("FIELD watchpoint missing `fieldClass`")
+                val fn = bp.fieldName ?: throw IllegalStateException("FIELD watchpoint missing `fieldName`")
+                com.acendas.androiddebugger.breakpoints.BreakpointInstaller.installFieldWatchpoint(
+                    vm = vm,
+                    id = bp.id,
+                    fieldClass = cls,
+                    fieldName = fn,
+                    wantAccess = kind == com.acendas.androiddebugger.breakpoints.BreakpointKind.FIELD_ACCESS,
+                    wantModification = kind == com.acendas.androiddebugger.breakpoints.BreakpointKind.FIELD_MODIFICATION,
+                    enabled = bp.enabled,
+                )
+            }
+            com.acendas.androiddebugger.breakpoints.BreakpointKind.CLASS_LOAD -> {
+                val pattern = bp.classPattern ?: throw IllegalStateException("CLASS_LOAD missing `classPattern`")
+                com.acendas.androiddebugger.breakpoints.BreakpointInstaller.installClassLoad(
+                    vm = vm, id = bp.id, classPattern = pattern, enabled = bp.enabled,
+                )
             }
         }
     }
@@ -238,6 +356,33 @@ object LifecycleTools {
                     }
                 }
 
+                // v1.3 persistence: rehydrate prior session state if any. Per (serial,
+                // package) pair, the JSON file is loaded and each breakpoint reinstalled
+                // through the same install path as `add_*_breakpoint`; watches are added
+                // with their original ids. Failure on any single restored item logs but
+                // doesn't fail the attach.
+                val restoredBreakpoints = mutableListOf<Int>()
+                val restoredWatches = mutableListOf<Int>()
+                val restoreErrors = mutableListOf<String>()
+                val effectiveSerial = resolvedSerial
+                if (effectiveSerial != null && pkg != null) {
+                    val saved = com.acendas.androiddebugger.state.SessionPersistence.load(effectiveSerial, pkg)
+                    if (saved != null) {
+                        for (bp in saved.breakpoints) {
+                            try {
+                                rehydrateBreakpoint(vm, bp)
+                                com.acendas.androiddebugger.breakpoints.BreakpointManager.advanceIdsTo(bp.id)
+                                restoredBreakpoints += bp.id
+                            } catch (t: Throwable) {
+                                restoreErrors += "bp#${bp.id} (${bp.kind}): ${t.message ?: t::class.simpleName}"
+                            }
+                        }
+                        for (w in saved.watches) {
+                            if (Session.watchManager.addWithId(w.id, w.expr)) restoredWatches += w.id
+                        }
+                    }
+                }
+
                 toolOk {
                     put("session_id", "${resolvedSerial ?: "unknown"}:$targetPid")
                     resolvedSerial?.let { put("serial", it) }
@@ -248,6 +393,18 @@ object LifecycleTools {
                     put("jdwp_port", port)
                     put("capabilities", caps)
                     put("warnings", warnings)
+                    if (restoredBreakpoints.isNotEmpty() || restoredWatches.isNotEmpty()) {
+                        put(
+                            "restored",
+                            buildJsonObject {
+                                put("breakpoints", restoredBreakpoints.size)
+                                put("watches", restoredWatches.size)
+                                if (restoreErrors.isNotEmpty()) {
+                                    put("errors", buildJsonArray { for (e in restoreErrors) add(e) })
+                                }
+                            },
+                        )
+                    }
                 }
             }
         }

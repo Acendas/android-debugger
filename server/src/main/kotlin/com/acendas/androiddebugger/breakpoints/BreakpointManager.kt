@@ -23,7 +23,20 @@ import java.util.concurrent.atomic.AtomicLong
  * Kinds of breakpoints the manager owns. Drives the [BreakpointMeta] payload shape and
  * lookup keys for the agent-facing JSON.
  */
-enum class BreakpointKind { LINE, EXCEPTION, METHOD_ENTRY, METHOD_EXIT, FIELD_ACCESS, FIELD_MODIFICATION }
+enum class BreakpointKind {
+    LINE,
+    EXCEPTION,
+    METHOD_ENTRY,
+    METHOD_EXIT,
+    FIELD_ACCESS,
+    FIELD_MODIFICATION,
+    /**
+     * v1.3 — pause when a class matching a pattern is loaded. Backed by a JDI
+     * `ClassPrepareRequest` with `SUSPEND_EVENT_THREAD` (vs. the internal,
+     * non-suspending class-prepare requests on a meta's `deferredPrepareRequests`).
+     */
+    CLASS_LOAD,
+}
 
 /**
  * One breakpoint registration. Lives in [BreakpointManager.metas] keyed by id. We stash
@@ -53,6 +66,8 @@ data class BreakpointMeta(
     /** Field watchpoints. */
     val fieldClass: String? = null,
     val fieldName: String? = null,
+    /** Class-load breakpoints (v1.3). Glob-style pattern per JDWP: `com.example.*`, `*.MyService`. */
+    val classPattern: String? = null,
 ) {
 
     /** Live JDI requests created for this meta. Plural because a line can resolve to multiple locations. */
@@ -112,6 +127,19 @@ object BreakpointManager {
     fun get(id: Int): BreakpointMeta? = metas[id]
 
     fun mintId(): Int = nextId.getAndIncrement()
+
+    /**
+     * Bump the id counter so the next [mintId] returns a value strictly greater than
+     * [minId]. Used by v1.3 session-persistence rehydration: after restoring ids 5, 7,
+     * and 12 from disk, we want fresh `add_*_breakpoint` calls to start at 13.
+     */
+    fun advanceIdsTo(minId: Int) {
+        while (true) {
+            val current = nextId.get()
+            if (current > minId) return
+            if (nextId.compareAndSet(current, minId + 1)) return
+        }
+    }
 
     /** Drop everything. Called from `Session.reset()` so a re-attach starts clean. */
     fun clear() {
@@ -252,6 +280,7 @@ object BreakpointManager {
         meta.logMessage != null -> EventRequest.SUSPEND_EVENT_THREAD
         meta.kind == BreakpointKind.METHOD_ENTRY || meta.kind == BreakpointKind.METHOD_EXIT ->
             EventRequest.SUSPEND_EVENT_THREAD
+        meta.kind == BreakpointKind.CLASS_LOAD -> EventRequest.SUSPEND_EVENT_THREAD
         else -> EventRequest.SUSPEND_EVENT_THREAD
     }
 

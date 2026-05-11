@@ -1,7 +1,7 @@
 {
   "name": "android-debugger",
-  "version": "1.2.4",
-  "description": "Drive an Android app debugging session from Claude Code — set/conditional breakpoints, watches, step over/into/out, evaluate expressions, inspect frames and locals. Backed by a Kotlin MCP server using JDI (Java Debug Interface) over JDWP via adb forward. Cross-platform: macOS, Linux, Windows.",
+  "version": "1.3.0",
+  "description": "AI-agent-driven Android debugger — exposes JDI/JDWP as MCP tools for Claude Code to drive. Set/conditional/hit-count/logpoint/exception/method/field/class-load breakpoints, watches, step over/into/out, evaluate DMN-FEEL expressions (kfeel-backed), inspect frames + locals + objects, persist breakpoint state across detach. Backed by a Kotlin MCP server using JDI (Java Debug Interface) over JDWP via adb forward. Designed for AI agents, not humans — every tool surface optimizes for agent legibility. Cross-platform: macOS, Linux, Windows.",
   "author": {
     "name": "Acendas",
     "email": "info@acendas.ca"
@@ -28,6 +28,11 @@
     "mcp",
     "workflow",
     "ai-debugger",
+    "feel",
+    "dmn",
+    "kfeel",
+    "session-persistence",
+    "class-load-breakpoint",
     "acendas"
   ],
   "tags": [
@@ -42,9 +47,13 @@
     "tracepoints",
     "exception-breakpoints",
     "field-watchpoints",
+    "class-load-breakpoints",
     "step-debugging",
     "frame-snapshot",
     "expression-evaluation",
+    "feel-expressions",
+    "kfeel",
+    "session-persistence",
     "logcat",
     "heap-dump",
     "view-hierarchy",

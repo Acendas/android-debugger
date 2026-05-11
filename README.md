@@ -1,8 +1,31 @@
 # android-debugger
 
-Drive an Android Java/Kotlin debugging session from Claude Code. Set breakpoints (line, conditional, hit-count, logpoint, exception, method, field watchpoint), step over/into/out, evaluate expressions in scope, inspect frames + locals + objects + arrays, tail logcat, dump heap — the full Android debugger surface, exposed as MCP tools an LLM agent calls.
+**A Claude Code plugin for AI-agent-driven Android debugging.** Exposes the Android Java/Kotlin debugger surface (JDI/JDWP over `adb forward`) as MCP tools an AI coding agent calls. It is **designed to be driven by Claude Code or compatible agents**, not by humans typing in a REPL — every tool surface, error code, and syntax choice optimizes for agent legibility over human ergonomics.
+
+If you want a human IDE-style debugger, use Android Studio. If you want Claude Code to drive a debug session end-to-end on your behalf, install this.
 
 Backed by a Kotlin MCP server using JDI (Java Debug Interface) over JDWP. Works on **macOS, Linux, and Windows**.
+
+## v1.3 highlights
+
+- **kfeel-backed `evaluate` tool.** Pure-FEEL expression engine ([ca.acendas:kfeel](https://github.com/Acendas/kfeel)) — binary ops, ternary `if/then/else`, `instance of`, list comprehensions (`every x in items satisfies x > 0`), ranges (`score in [1..100]`), three-valued null logic. Property access on pre-resolved object trees works without a JDI round-trip per `.` — `FeelContextBuilder` walks instance fields to depth 3 at context-build time. String literals use **single quotes** (`'hello'`) per the FEEL spec.
+- **Method calls live on `eval_method`.** FEEL has no `obj.method()` syntax, and kfeel's published surface doesn't let us register custom functions. v1.3 commits to a two-tool split: `evaluate` for pure-expression FEEL; the existing `eval_method` MCP tool for method invocations (unchanged mutation-refusal, single-flight, 10s timeout). The skill docs make the split explicit so the agent picks the right tool first try.
+- **Persistent state across detach.** Breakpoints and watches save to `$CLAUDE_PLUGIN_DATA/android-debugger/sessions/<serial>_<package>.json` on `detach` and rehydrate on the next `attach` to the same `(serial, package)`. Original ids preserved so the agent's prior `remove_breakpoint(id)` calls keep working across the cycle. Opt out with `detach({ persist: false })`.
+- **Pause-on-class-load.** New `add_class_load_breakpoint({ class_pattern })` MCP tool. Pattern uses JDWP glob syntax (`com.example.*`, `*.MyService`). Fires `Stopped(reason='class_prepare', breakpoint_id=...)` — useful for catching first-load of a class to debug static initializers, gating on dependency injection, etc.
+
+## v1.3 migration
+
+**Breaking syntax change** for `evaluate`:
+
+| v1.2                                | v1.3                                                         |
+|-------------------------------------|--------------------------------------------------------------|
+| `evaluate("user.getName()")`        | `eval_method({ frame, target: 'this', method: 'getName' })` |
+| `evaluate("list.size() > 10")`      | `eval_method` for size, then decide directly                 |
+| `evaluate("\"hello\".length() > 3")`| `eval_method` for length                                     |
+| `evaluate("a + b")`                 | `evaluate("a + b")` — **same, kfeel just made it actually work** |
+| `evaluate("user.age >= 18 ? 'a' : 'm'")` | `evaluate("if user.age >= 18 then 'a' else 'm'")` (FEEL ternary syntax) |
+
+Watches and conditional breakpoints likewise use FEEL syntax. The conversion table is the same.
 
 ## What's distinctive
 
@@ -17,6 +40,8 @@ Backed by a Kotlin MCP server using JDI (Java Debug Interface) over JDWP. Works 
 - **JDK 17 or newer.** Android Studio bundles one — point `JAVA_HOME` at `<AndroidStudio>/jbr` if you don't have a system JDK.
 - **`adb` on PATH** (or `ANDROID_HOME` / `ANDROID_SDK_ROOT` set). Comes with the Android SDK platform-tools.
 - **A debuggable APK on a connected device or emulator.** Apps built with `debuggable=true` (the default for debug variants) expose a JDWP port discoverable via `adb jdwp`. Release/R8-stripped builds will attach but report `release_build_likely` warnings; locals will be mostly empty until you rebuild as a debug variant.
+- **Android 8 (API 26) or newer** for the target app. Anything that runs on ART works; pre-ART devices aren't supported.
+- **Claude Code with `CLAUDE_PLUGIN_DATA` propagation** for v1.3 persistence. Older Claude Code versions still work — persistence is silently disabled and the agent reads breakpoints fresh each session.
 
 ## Install
 
@@ -85,9 +110,13 @@ The server only listens on `localhost` — adb's port forward binds there, and J
 
 **App ANR-killed mid-debug** — the system kills processes that block the main thread for >5s. Set breakpoints off the UI thread, or use logpoints (non-suspending) for main-thread suspects.
 
-**Transient disconnect** (USB unplug, emulator restart) — surfaces as `code: vm_disconnected`. Re-run `/android-debugger:attach`. Breakpoints don't persist across sessions in v1.0.
+**Transient disconnect** (USB unplug, emulator restart) — surfaces as `code: vm_disconnected`. Re-run `/android-debugger:attach`. v1.3 persistence will rehydrate prior breakpoints + watches automatically on re-attach to the same `(serial, package)`.
 
 **`dump_heap` fails with permission denied** — `am dumpheap` needs `run-as` access on Android 11+, which only debuggable APKs have on user/userdebug builds. Confirm the app is built debuggable (the `attach` response carries a `release_build_likely` warning if it isn't), or run on a rooted/eng emulator if you're profiling a release build.
+
+**`evaluate` says "Parse error in FEEL expression"** — FEEL uses single quotes for string literals (`'hello'`), single `=` for equality, `and`/`or`/`not` for boolean logic, `instance of` for type checks. For method calls on JDI references, use the separate `eval_method` MCP tool — FEEL has no `obj.method()` syntax. See the `evaluate` tool description for the full grammar quick reference.
+
+**Persistence file not appearing in `$CLAUDE_PLUGIN_DATA/android-debugger/sessions/`** — your Claude Code version may not propagate `CLAUDE_PLUGIN_DATA` to MCP subprocesses. v1.3 logs a single line ("CLAUDE_PLUGIN_DATA is unset; persistence disabled") at first save attempt — check the server log via `connection_status`. Functionality is unaffected; the agent just re-adds breakpoints each session.
 
 ## Building from source
 
@@ -97,6 +126,10 @@ cd server
 ```
 
 The fat jar lands at `dist/android-debugger-server.jar` and is committed to the repo so users don't need a build step. See `CONTRIBUTING.md` for the end-to-end test loop against a public sample Android app.
+
+## Dependencies
+
+- **[ca.acendas:kfeel](https://github.com/Acendas/kfeel)** — production-ready Kotlin implementation of the DMN 1.3 FEEL (Friendly Enough Expression Language) specification. Powers the v1.3 `evaluate` MCP tool's expression grammar. Zero transitive dependencies; bundled in the fat jar.
 
 ## License
 

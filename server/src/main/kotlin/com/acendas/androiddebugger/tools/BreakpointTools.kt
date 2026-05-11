@@ -3,6 +3,7 @@ package com.acendas.androiddebugger.tools
 import com.acendas.androiddebugger.ErrorCode
 import com.acendas.androiddebugger.Session
 import com.acendas.androiddebugger.ToolError
+import com.acendas.androiddebugger.breakpoints.BreakpointInstaller
 import com.acendas.androiddebugger.breakpoints.BreakpointKind
 import com.acendas.androiddebugger.breakpoints.BreakpointManager
 import com.acendas.androiddebugger.breakpoints.BreakpointMeta
@@ -57,11 +58,53 @@ object BreakpointTools {
         registerAddExceptionBreakpoint(server)
         registerAddMethodBreakpoint(server)
         registerAddFieldWatchpoint(server)
+        registerAddClassLoadBreakpoint(server)
         registerListBreakpoints(server)
         registerRemoveBreakpoint(server)
         registerEnableBreakpoint(server)
         registerDisableBreakpoint(server)
         registerListLogpointEntries(server)
+    }
+
+    // -------------------- add_class_load_breakpoint --------------------
+
+    private fun registerAddClassLoadBreakpoint(server: Server) {
+        server.addTool(
+            name = "add_class_load_breakpoint",
+            description = "v1.3 — pause when a class matching `class_pattern` is loaded. " +
+                "Pattern uses JDWP glob syntax: `com.example.Foo` (exact), `com.example.*` " +
+                "(prefix), `*.MyService` (suffix). Fires on every class that matches, with " +
+                "`Stopped(reason='class_prepare', breakpoint_id=…)`. The originating thread is " +
+                "the loader's thread; inspect with `frame_snapshot` to see the load site. " +
+                "Common uses: catching first-load of a class for static-initializer debugging; " +
+                "pausing before any of a class's code runs; gating on dependency injection. " +
+                "Returns `{ ok, id, class_pattern }`.",
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    putJsonObject("class_pattern") {
+                        put("type", "string")
+                        put(
+                            "description",
+                            "Glob pattern per JDWP: `com.example.Foo`, `com.example.*`, `*.MyService`.",
+                        )
+                    }
+                },
+                required = listOf("class_pattern"),
+            ),
+            toolAnnotations = ToolAnnotations(readOnlyHint = false, openWorldHint = false),
+        ) { request ->
+            runTool {
+                val vm = Session.requireAttached()
+                val pattern = (request.arguments?.get("class_pattern") as? JsonPrimitive)?.contentOrNull
+                    ?: throw ToolError(ErrorCode.InvalidTarget, "Missing `class_pattern`.")
+                val id = BreakpointManager.mintId()
+                BreakpointInstaller.installClassLoad(vm, id, pattern)
+                toolOk {
+                    put("id", id)
+                    put("class_pattern", pattern)
+                }
+            }
+        }
     }
 
     // -------------------- add_line_breakpoint --------------------
@@ -122,47 +165,25 @@ object BreakpointTools {
                 val logMessage = (args.get("log_message") as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() }
 
                 val id = BreakpointManager.mintId()
-                val meta = BreakpointMeta(
+                val result = BreakpointInstaller.installLine(
+                    vm = vm,
                     id = id,
-                    kind = BreakpointKind.LINE,
                     file = file,
                     line = line,
                     condition = condition,
                     hitCount = hitCount,
                     logMessage = logMessage,
                 )
-
-                val locations = SourceResolver.resolve(vm, file, line)
-                val erm = vm.eventRequestManager()
-                for (loc in locations) {
-                    val req: BreakpointRequest = erm.createBreakpointRequest(loc).apply {
-                        setSuspendPolicy(BreakpointManager.suspendPolicyFor(meta))
-                        enable()
-                    }
-                    BreakpointManager.attachRequest(meta, req)
-                }
-
-                // Class-prepare deferral: register patterns even when we already resolved
-                // some locations — Kotlin inline lambdas may live in classes that load
-                // later (the file's outer class is loaded but `MainActivity$onCreate$1`
-                // doesn't prepare until first use).
-                val patterns = SourceResolver.classPatternsFor(file)
-                if (patterns.isNotEmpty()) {
-                    BreakpointManager.addDeferredPrepareRequests(erm, meta, patterns)
-                }
-
-                BreakpointManager.register(meta)
-
                 toolOk {
                     put("id", id)
-                    put("resolved_locations", locations.size)
-                    put("deferred", patterns.isNotEmpty())
+                    put("resolved_locations", result.resolvedLocations)
+                    put("deferred", result.deferred || result.resolvedLocations == 0)
                     put("file", file)
                     put("line", line)
                     if (condition != null) put("condition", condition)
                     if (hitCount != null) put("hit_count", hitCount)
                     if (logMessage != null) put("log_message", logMessage)
-                    if (locations.isEmpty()) {
+                    if (result.resolvedLocations == 0) {
                         put(
                             "hint",
                             "No matching class is currently loaded — registered as a deferred breakpoint. " +
@@ -216,43 +237,16 @@ object BreakpointTools {
                 }
 
                 val id = BreakpointManager.mintId()
-                val meta = BreakpointMeta(
+                val result = BreakpointInstaller.installException(
+                    vm = vm,
                     id = id,
-                    kind = BreakpointKind.EXCEPTION,
                     exceptionClass = cls,
                     caught = caught,
                     uncaught = uncaught,
                 )
-
-                val erm = vm.eventRequestManager()
-                var deferred = false
-                if (cls == null) {
-                    val req = erm.createExceptionRequest(null, caught, uncaught).apply {
-                        setSuspendPolicy(EventRequest.SUSPEND_EVENT_THREAD)
-                        enable()
-                    }
-                    BreakpointManager.attachRequest(meta, req)
-                } else {
-                    val refs = vm.classesByName(cls)
-                    if (refs.isEmpty()) {
-                        // Defer.
-                        BreakpointManager.addDeferredPrepareRequests(erm, meta, listOf(cls))
-                        deferred = true
-                    } else {
-                        for (ref in refs) {
-                            val req = erm.createExceptionRequest(ref, caught, uncaught).apply {
-                                setSuspendPolicy(EventRequest.SUSPEND_EVENT_THREAD)
-                                enable()
-                            }
-                            BreakpointManager.attachRequest(meta, req)
-                        }
-                    }
-                }
-
-                BreakpointManager.register(meta)
                 toolOk {
                     put("id", id)
-                    put("deferred", deferred)
+                    put("deferred", result.deferred)
                     if (cls != null) put("class", cls)
                     put("caught", caught)
                     put("uncaught", uncaught)
@@ -308,32 +302,12 @@ object BreakpointTools {
                     )
                 }
 
-                val erm = vm.eventRequestManager()
                 val id = BreakpointManager.mintId()
-                val meta = BreakpointMeta(
-                    id = id,
-                    kind = if (isEntry) BreakpointKind.METHOD_ENTRY else BreakpointKind.METHOD_EXIT,
-                    methodClass = cls,
-                    methodName = method,
-                )
-
                 if (isEntry) {
-                    val req: MethodEntryRequest = erm.createMethodEntryRequest().apply {
-                        addClassFilter(cls)
-                        setSuspendPolicy(EventRequest.SUSPEND_EVENT_THREAD)
-                        enable()
-                    }
-                    BreakpointManager.attachRequest(meta, req)
+                    BreakpointInstaller.installMethodEntry(vm, id, cls, method)
                 } else {
-                    val req: MethodExitRequest = erm.createMethodExitRequest().apply {
-                        addClassFilter(cls)
-                        setSuspendPolicy(EventRequest.SUSPEND_EVENT_THREAD)
-                        enable()
-                    }
-                    BreakpointManager.attachRequest(meta, req)
+                    BreakpointInstaller.installMethodExit(vm, id, cls, method)
                 }
-
-                BreakpointManager.register(meta)
                 toolOk {
                     put("id", id)
                     put("class", cls)
@@ -390,66 +364,15 @@ object BreakpointTools {
                     )
                 }
 
-                // Per Story 7.1.1: route through the central capability gate so the
-                // error code/feature key is consistent with every other capability-gated
-                // tool. Falls back to the live `vm.canWatch*` probe if the cached map
-                // somehow disagrees (defensive — ART version skew between probe and call).
-                if (wantAccess) {
-                    com.acendas.androiddebugger.Capability.requireCapability(
-                        com.acendas.androiddebugger.Capability.FIELD_ACCESS_WATCHPOINTS,
-                    )
-                }
-                if (wantModification) {
-                    com.acendas.androiddebugger.Capability.requireCapability(
-                        com.acendas.androiddebugger.Capability.FIELD_MODIFICATION_WATCHPOINTS,
-                    )
-                }
-
-                val refs = vm.classesByName(cls)
-                if (refs.isEmpty()) {
-                    throw ToolError(
-                        errorCode = ErrorCode.InvalidTarget,
-                        message = "Class `$cls` is not loaded in the VM.",
-                        hint = "Field watchpoints can't be deferred. Wait for the class to load (e.g., trigger one access) and try again.",
-                    )
-                }
-                val refType = refs.first()
-                val field = refType.fieldByName(fieldName)
-                    ?: throw ToolError(
-                        errorCode = ErrorCode.InvalidTarget,
-                        message = "Field `$fieldName` not found on class `$cls`.",
-                    )
-
                 val id = BreakpointManager.mintId()
-                val kindEnum = when {
-                    wantAccess && wantModification -> BreakpointKind.FIELD_ACCESS // We track both kinds via meta + activeRequests; pick one for the enum.
-                    wantAccess -> BreakpointKind.FIELD_ACCESS
-                    else -> BreakpointKind.FIELD_MODIFICATION
-                }
-                val meta = BreakpointMeta(
+                BreakpointInstaller.installFieldWatchpoint(
+                    vm = vm,
                     id = id,
-                    kind = kindEnum,
                     fieldClass = cls,
                     fieldName = fieldName,
+                    wantAccess = wantAccess,
+                    wantModification = wantModification,
                 )
-
-                val erm = vm.eventRequestManager()
-                if (wantAccess) {
-                    val req: AccessWatchpointRequest = erm.createAccessWatchpointRequest(field).apply {
-                        setSuspendPolicy(EventRequest.SUSPEND_EVENT_THREAD)
-                        enable()
-                    }
-                    BreakpointManager.attachRequest(meta, req)
-                }
-                if (wantModification) {
-                    val req: ModificationWatchpointRequest = erm.createModificationWatchpointRequest(field).apply {
-                        setSuspendPolicy(EventRequest.SUSPEND_EVENT_THREAD)
-                        enable()
-                    }
-                    BreakpointManager.attachRequest(meta, req)
-                }
-
-                BreakpointManager.register(meta)
                 toolOk {
                     put("id", id)
                     put("class", cls)
@@ -598,6 +521,7 @@ object BreakpointTools {
             BreakpointKind.METHOD_EXIT -> "method_exit"
             BreakpointKind.FIELD_ACCESS -> "field_access"
             BreakpointKind.FIELD_MODIFICATION -> "field_modification"
+            BreakpointKind.CLASS_LOAD -> "class_load"
         })
         put("enabled", m.enabled)
         put("active_request_count", m.activeRequests.size)
@@ -627,5 +551,6 @@ object BreakpointTools {
         m.methodName?.let { put("method_name", it) }
         m.fieldClass?.let { put("field_class", it) }
         m.fieldName?.let { put("field_name", it) }
+        m.classPattern?.let { put("class_pattern", it) }
     }
 }

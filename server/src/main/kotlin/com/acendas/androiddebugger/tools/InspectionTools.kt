@@ -5,10 +5,8 @@ import com.acendas.androiddebugger.Session
 import com.acendas.androiddebugger.ToolError
 import com.acendas.androiddebugger.inspection.Evaluator
 import com.acendas.androiddebugger.inspection.ExceptionSummary
-import com.acendas.androiddebugger.inspection.ExprParser
-import com.acendas.androiddebugger.inspection.LiteralValue
+import com.acendas.androiddebugger.inspection.FeelValueRenderer
 import com.acendas.androiddebugger.inspection.ObjectIdMint
-import com.acendas.androiddebugger.inspection.ParseException
 import com.acendas.androiddebugger.inspection.RenderedValue
 import com.acendas.androiddebugger.inspection.SnapshotBuilder
 import com.acendas.androiddebugger.inspection.ValueRenderer
@@ -212,42 +210,39 @@ object InspectionTools {
     private fun registerEvaluate(server: Server) {
         server.addTool(
             name = "evaluate",
-            description = "Evaluate a small expression in a paused frame and return the rendered value. " +
-                "**Supports**: identifiers (`x`), member access (`a.b.c`), method calls with literal " +
-                "and identifier args (`list.get(0)`, `\"hello\".length()`, `cache.put(\"k\", item)`), " +
-                "and basic casts (`(String) x`). " +
-                "**Out of scope**: binary operators (`+`, `==`, `&&`), conditionals, lambdas, array " +
-                "indexing, generics, and anything else from the full Java expression language. " +
-                "For raw `invokeMethod` access (overload-disambiguated, static targets, ref-id args), " +
-                "use the `eval_method` escape-hatch tool. " +
+            description = "Evaluate a **DMN FEEL** expression in a paused frame and return the rendered value. " +
+                "Powered by the kfeel engine (`ca.acendas:kfeel`). " +
+                "**Supports**: identifiers (`x`), property access on pre-resolved object trees " +
+                "(`user.address.city` — instance fields are walked eagerly to depth 3 when the " +
+                "context is built), arithmetic (`+ - * / **`), comparison (`= != < <= > >=`), " +
+                "boolean logic (`and or not`), conditionals (`if x > 10 then 'big' else 'small'`), " +
+                "type checks (`value instance of string`), list ops (`count(items)`, `sum(items)`, " +
+                "`every x in items satisfies x > 0`), ranges (`score in [1..100]`), three-valued " +
+                "null logic (operations on null propagate null). **String literals use single quotes** " +
+                "(FEEL spec): `'hello'`, not `\"hello\"`. " +
+                "**Out of scope**: method calls on JDI references. FEEL has no `obj.method(args)` " +
+                "syntax; use the `eval_method` tool for that. " +
                 "Identifiers resolve in this order: frame locals → `this` fields → enclosing-class statics. " +
                 "Single-flight per session — concurrent calls receive `vm_paused` immediately. " +
-                "10s default timeout; primitives are auto-boxed via `vm.mirrorOf` so ART's verifier accepts them. " +
-                "**Mutation refusal**: methods that look like state mutators (`set*`, `clear`, `apply`, " +
-                "`commit`, `reset`, `add*`, `put*`, `remove*`, `delete*`, `update*`, `cancel*`, " +
-                "`destroy*`, `invalidate*`, `insert*`, `drop*`) return `vm_mutation_refused` unless " +
-                "you pass `allow_mutation: true`.",
+                "10s default timeout.",
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
                     putJsonObject("expr") {
                         put("type", "string")
-                        put("description", "Expression to evaluate (paths + method calls + literal args).")
+                        put(
+                            "description",
+                            "FEEL expression — e.g., `score >= 80`, `user.age in [18..65]`, " +
+                                "`if items = null then 0 else count(items)`. String literals " +
+                                "use single quotes: `'hello'`.",
+                        )
                     }
                     putJsonObject("frame_id") {
                         put("type", "string")
                         put("description", "Frame id (frame#<thread>:<idx>) from frame_snapshot or get_frames.")
                     }
-                    putJsonObject("allow_mutation") {
-                        put("type", "boolean")
-                        put(
-                            "description",
-                            "Allow invoking methods whose names look like state mutators (set*, clear, " +
-                                "apply, commit, reset, etc.). Default false — read-only inspection.",
-                        )
-                    }
                 },
             ),
-            toolAnnotations = ToolAnnotations(readOnlyHint = false, openWorldHint = false),
+            toolAnnotations = ToolAnnotations(readOnlyHint = true, openWorldHint = false),
         ) { request ->
             runTool {
                 val vm = Session.requireAttached()
@@ -255,25 +250,15 @@ object InspectionTools {
                     ?: throw ToolError(ErrorCode.InvalidTarget, "Missing `expr`.")
                 val frameId = (request.arguments?.get("frame_id") as? JsonPrimitive)?.contentOrNull
                     ?: throw ToolError(ErrorCode.InvalidTarget, "Missing `frame_id`.")
-                val allowMutation = (request.arguments?.get("allow_mutation") as? JsonPrimitive)
-                    ?.booleanOrNull ?: false
                 val (threadId, frameIdx) = ObjectIdMint.resolveFrame(frameId)
                     ?: throw ToolError(ErrorCode.InvalidTarget, "Bad frame id `$frameId`.")
                 val thread = vm.allThreads().firstOrNull { it.uniqueID() == threadId }
                     ?: throw ToolError(ErrorCode.InvalidTarget, "Thread $threadId not found.")
-                val ast = try {
-                    ExprParser.parse(expr)
-                } catch (e: ParseException) {
-                    throw ToolError(
-                        errorCode = ErrorCode.InvalidTarget,
-                        message = "Failed to parse expression: ${e.message}",
-                        hint = "evaluate supports paths + method calls + literal args. Use eval_method for anything else.",
-                    )
-                }
-                val value = Evaluator.evaluate(thread, frameIdx, ast, allowMutation = allowMutation)
-                val rendered = ValueRenderer.render(value)
+                val feel = Evaluator.evaluate(thread, frameIdx, expr)
+                val rendered = FeelValueRenderer.render(feel)
                 toolOk {
                     put("value", rendered.toJson())
+                    put("raw", FeelValueRenderer.toJson(feel))
                     put("expr", expr)
                 }
             }
@@ -345,7 +330,7 @@ object InspectionTools {
                 val args: List<Value?> = (argsJson ?: JsonArray(emptyList())).map { argEl ->
                     coerceJsonArgToJdiValue(argEl)
                 }
-                val value = Evaluator.invokeRaw(
+                val feel = Evaluator.invokeRaw(
                     thread = thread,
                     frameIdx = frameIdx,
                     target = target,
@@ -353,9 +338,10 @@ object InspectionTools {
                     args = args,
                     allowMutation = allowMutation,
                 )
-                val rendered = ValueRenderer.render(value)
+                val rendered = FeelValueRenderer.render(feel)
                 toolOk {
                     put("value", rendered.toJson())
+                    put("raw", FeelValueRenderer.toJson(feel))
                     put("target", target)
                     put("method", methodName)
                 }
