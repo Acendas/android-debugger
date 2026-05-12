@@ -362,29 +362,10 @@ class EventLoop(
             return Outcome.RESUME
         }
 
-        // Logpoint path: render, push to buffer, resume immediately. We need locals so
-        // suspend policy is SUSPEND_EVENT_THREAD; resuming the event-set restores execution.
-        val logTemplate = meta.logMessage
-        if (logTemplate != null) {
-            val rendered = try {
-                LogMessageRenderer.render(logTemplate, event.thread())
-            } catch (t: Throwable) {
-                "<render error: ${t.message ?: t::class.simpleName}>"
-            }
-            val loc = runCatching { event.location() }.getOrNull()
-            val file = try { loc?.sourceName() } catch (_: AbsentInformationException) { null }
-            val line = loc?.lineNumber() ?: meta.line ?: -1
-            LogpointBuffer.push(
-                threadName = runCatching { event.thread().name() }.getOrNull(),
-                file = file,
-                line = line,
-                breakpointId = meta.id,
-                rendered = rendered,
-            )
-            meta.logpointEntries.incrementAndGet()
-            return Outcome.RESUME
-        }
-
+        // Gate order — condition and hit-count are evaluated BEFORE the logpoint render so
+        // that `condition` + `log_message` together act as a conditional logpoint (log only
+        // when the predicate passes). Same gates apply uniformly to stop and log paths.
+        //
         // Conditional path: evaluate + resume on false. We use the existing Evaluator,
         // which is single-flight; if a parallel eval is already running, treat it as
         // "condition unknown — surface the stop" so we don't accidentally swallow real hits.
@@ -406,6 +387,30 @@ class EventLoop(
                 meta.suppressedHits.incrementAndGet()
                 return Outcome.RESUME
             }
+        }
+
+        // Logpoint path: render, push to buffer, resume immediately. We need locals so
+        // suspend policy is SUSPEND_EVENT_THREAD; resuming the event-set restores execution.
+        // Reached only after condition + hit-count gates passed.
+        val logTemplate = meta.logMessage
+        if (logTemplate != null) {
+            val rendered = try {
+                LogMessageRenderer.render(logTemplate, event.thread())
+            } catch (t: Throwable) {
+                "<render error: ${t.message ?: t::class.simpleName}>"
+            }
+            val loc = runCatching { event.location() }.getOrNull()
+            val file = try { loc?.sourceName() } catch (_: AbsentInformationException) { null }
+            val line = loc?.lineNumber() ?: meta.line ?: -1
+            LogpointBuffer.push(
+                threadName = runCatching { event.thread().name() }.getOrNull(),
+                file = file,
+                line = line,
+                breakpointId = meta.id,
+                rendered = rendered,
+            )
+            meta.logpointEntries.incrementAndGet()
+            return Outcome.RESUME
         }
 
         // Deliver as a stopped event.

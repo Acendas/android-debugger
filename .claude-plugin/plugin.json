@@ -1,6 +1,6 @@
 {
   "name": "android-debugger",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "description": "AI-agent-driven Android debugger — exposes JDI/JDWP and a JVMTI agent as MCP tools for Claude Code to drive. v1.6 deepens the JVMTI surface: native-speed heap walks (count_instances / iterate_heap_by_class / find_referrers / find_referrer_chain) that auto-route around the slow JDI path, line-rate method tracing (start_method_trace with class/method/regex filters + leaky-bucket throttling + entry/exit symmetry under sampling + optional arg + return-value capture), and class-allowlisted allocation tracing (start_alloc_trace with optional stack capture) — all wired through a v3 JSON-RPC wire bump on the native agent. add_method_breakpoint auto-routes logpoint+no-condition through JVMTI for line-rate logpoints. Plus everything from v1.0–v1.5: HotSwap (hot_swap_class + hot_swap_classes batch + hot_swap_revert), the goal-driven /android-debugger:patch skill, breakpoints (line, conditional, hit-count, logpoint, exception, method, field, class-load), watches, step, FEEL expression evaluation (kfeel), eval_method with mutation refusal, frame snapshots, logcat, heap dump, session persistence, and the C++ JVMTI agent (3 ABIs). Cross-platform: macOS, Linux, Windows.",
   "author": {
     "name": "Acendas",

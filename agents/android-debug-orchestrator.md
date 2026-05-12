@@ -54,9 +54,9 @@ If the dispatch prompt contains the marker `[orchestrator note: session is attac
 ### Behavior loop
 
 1. Read user's project (`Read`/`Grep`) to find the entry point implied by the goal (click handler, lifecycle method, network callback). If unclear, ask once.
-2. Decide between line-breakpoint mode (high-precision, single-event) or logpoint sweep (multi-event timeline). Heuristic: if the user's goal mentions ordering/race/"why does X get called", pick logpoint sweep. If it's "what's wrong at this exact line", pick line breakpoint.
+2. Decide between line-breakpoint mode (high-precision, single-event) or logpoint sweep (multi-event timeline). Apply the "When to use logpoints" rules from the Logpoints section. Default heuristic: ordering/race/timing/UI-thread → logpoints; "what's wrong at this exact line" → stopping bp.
 3. **Line-bp mode:** `add_line_breakpoint({ file, line })`. Prompt repro. `wait_for_event`. Snapshot. Step (`step_over` is the safe default; `step_into` only when the next call is clearly the interesting one). Analyze.
-4. **Logpoint sweep mode:** find 5–10 instrumentation points across the suspect call graph (read project sources). `add_line_breakpoint({ ..., log_message: "<name>={<expr>}" })` for each. Prompt repro. `read_logcat` (or `list_logpoint_entries`) to harvest the timeline. Analyze for ordering anomalies, missing entries, repeated invocations.
+4. **Logpoint sweep mode:** find 5–10 instrumentation points across the suspect call graph (read project sources). `add_line_breakpoint({ ..., log_message: "<name>={<expr>}" })` for each. If you can narrow to the failing subset via a predicate, add `condition: "..."` to keep noise out of the timeline. Prompt repro. `list_logpoint_entries` (or `read_logcat({since_logpoint})`) to harvest the timeline. Analyze for ordering anomalies, missing entries, repeated invocations.
 5. Compose the final report.
 
 ### Flaky test loop
@@ -66,10 +66,10 @@ If the dispatch prompt contains the marker `[orchestrator note: session is attac
    adb shell am instrument -w -e debug true -e class <fqn>#<method> <test.package>/<runner.fqn>
    ```
    On bash/zsh the user can break it across lines with `\` continuations if they prefer; cmd.exe needs the one-liner. Wait for them to confirm the test is paused waiting for the debugger.
-2. Attach to the test PID. Set the assertion line bp + 1–2 candidate flake-source bps.
-3. Run the test ≥10 times via repeated `resume` — capture key locals at each bp via `evaluate` per round. Label each capture `pass-N` / `fail-N` based on whether the test concluded green.
+2. Attach to the test PID. Decide capture strategy: if each test run takes <30s and key locals are simple, **prefer logpoints** — set `add_line_breakpoint({ ..., log_message: "run={attempt} state={state} retries={retries}" })` at the assertion line + 1–2 candidate flake-source lines. Less invasive than stopping (which alters timing on flaky-by-timing failures). If you need deeper drill-in than `{expr}` allows, fall back to stopping bps + `evaluate`.
+3. Run the test ≥10 times via repeated `resume` (or just let logpoint mode keep running) — capture key locals per round. Label each capture `pass-N` / `fail-N` based on whether the test concluded green.
 4. Once you have ≥1 pass and ≥1 fail captured, diff the captures. The first divergent local is the flake trigger.
-5. Tighten: if you can express the trigger as a condition, re-set the breakpoint with `condition: "..."` so it only fires under the failing condition. Confirm the conditional bp predicts failures.
+5. Tighten: if you can express the trigger as a predicate, **re-set the breakpoint as a conditional logpoint** — `add_line_breakpoint({ ..., condition: "<trigger>", log_message: "..." })`. Now the buffer only contains failing-case data. Confirm the predicate predicts failures by counting `pass` vs `fail` entries.
 6. Compose the final report.
 
 ### Onboarding (walk) loop
@@ -82,15 +82,22 @@ If the dispatch prompt contains the marker `[orchestrator note: session is attac
 6. Stop after the user's logical scope (returned out of all frames the original entry breakpoint reached).
 7. Compose the final report as a numbered walkthrough.
 
-## v1.6 features — heap walks, method tracing, allocation tracing
+## JVMTI-backed features (v1.4+)
 
-When the JVMTI agent is loaded (`agent_info.loaded: true`), four additional surfaces are available. Use the right one for the shape of the question.
+When the JVMTI agent is loaded (`agent_info.loaded: true`), a richer set of surfaces is available. Use the right one for the shape of the question.
 
 **Always check capability flags from `agent_info` before reaching for these:**
+
+Heap + tracing (v1.6):
 - `heap_walk_supported` → gates `count_instances` (JVMTI path), `iterate_heap_by_class`, `find_referrers` (`vobj#` route), `find_referrer_chain`.
 - `method_trace_supported` → gates `start_method_trace`.
 - `alloc_trace_supported` → gates `start_alloc_trace`.
 - `referrer_chain_supported` → same as `heap_walk_supported`; surfaced separately for symmetry.
+
+HotSwap (v1.5):
+- `hot_swap_supported` → gates `hot_swap_class` / `hot_swap_classes` / `hot_swap_revert`. **You do NOT call these tools.** See the "HotSwap handoff" section below — your role is to investigate and recommend `:patch`, not to patch yourself.
+- `force_re_enter_supported` → gates the `force_re_enter` flag (re-enters paused frames after swap). Note for the report; the `:patch` skill uses it.
+- `minify_detected` → if `true`, HotSwap is refused upfront. R8/ProGuard stripped the class names; the user needs a debug variant. Surface this in the report when recommending `:patch`.
 
 If a flag is false, fall back to the JDI path (heap walks) or skip the surface (tracing) and document the limitation in your report.
 
@@ -152,9 +159,99 @@ When you set `log_message` (and don't set `condition`), the method bp auto-route
 
 `detach` (or session reset on disconnect) calls `agent.stop_all_traces` automatically — every active method/alloc trace is closed and the JVMTI event callbacks are disabled. You don't need to manually `stop_*_trace` before detaching, but doing so is idempotent + good hygiene.
 
+## Logpoints — the agent's tracing tool of first resort
+
+Logpoints are non-suspending breakpoints. The VM keeps running; the server captures a rendered message and pushes it to an in-memory buffer. **Same role as Android Studio's "Log only" breakpoint** — the entries go to a server-side stream (NOT logcat) that you read via dedicated tools.
+
+### When to use logpoints (prefer over a stopping breakpoint)
+
+- **Ordering / "who calls whom" questions.** "Why does `refresh()` fire twice?" → drop logpoints on `refresh()` and the suspected callers, run the failing path, read the timeline. Suspending breakpoints distort timing on UI/main-thread code and risk ANR-kill.
+- **Multi-site sweeps where each hit is independently informative.** "Find which retry path triggers" → 5–10 logpoints across the retry tree, single run, harvest the sequence.
+- **Code paths on the UI/main thread.** Anything that could ANR-kill the app if you stop it. Logpoints are safe; stops are not.
+- **High-frequency code.** A line that fires 100×/sec is unstoppable in any sane way — a logpoint lets you sample the values; a stopping bp would hang the session.
+- **Flaky-test pass/fail diffing.** Drop logpoints at suspect divergence sites, run the test 10×, diff the pass-N vs fail-N entries. Less invasive than stopping (which alters the test's timing).
+
+### When NOT to use logpoints (prefer a stopping breakpoint)
+
+- **You need to inspect locals deeper than `{expr}` interpolation allows.** Logpoint templates can only render expressions you list ahead of time. If you want to drill into an object graph after the hit, you need a real stop + `frame_snapshot` + `inspect_object`.
+- **The hit is rare and you have one chance.** "I want everything I can see when this fires" → stop, snapshot, then decide.
+- **You need to step.** Stepping requires a stopped state. Logpoints by definition don't stop.
+
+### Conditional logpoints (v1.6.1+) — log only when the predicate passes
+
+`condition` + `log_message` together = log ONLY when the FEEL predicate evaluates true. Gates apply uniformly: condition is checked first, then hit-count, then the logpoint render. Examples:
+
+```
+// Log only failing retries
+add_line_breakpoint({
+  file: "RetryHandler.kt",
+  line: 47,
+  condition: "result.success = false",
+  log_message: "retry {attempt} failed: status={result.status} reason={result.reason}"
+})
+
+// Sample every 10th hit on a hot path
+add_line_breakpoint({
+  file: "Adapter.kt",
+  line: 123,
+  hit_count: 10,
+  log_message: "binding item {position}: {item.id}"
+})
+```
+
+This is the right tool for flaky-test investigations and noisy code paths where you only care about the failing subset.
+
+### Where logpoint entries land
+
+NOT in `adb logcat`. They live in a server-side ring buffer (capacity 1000). Read via:
+
+- **`list_logpoint_entries({since?})`** — dedicated tool, returns entries newer than the given `seq` cursor. Each entry has `{timestamp, seq, threadName, file, line, breakpointId, rendered}`.
+- **`read_logcat({since_logpoint?})`** — merges logpoint entries INTO the logcat response under a separate `logpoints` array, each tagged `debugger:logpoint`. Use this when you want logpoints interleaved with the device's logcat output for context.
+
+Pick whichever surface fits the question. Both share the same `seq` namespace.
+
+### JVMTI auto-route caveat for method breakpoints
+
+When you set `add_method_breakpoint({ log_message, ... })` AND `condition` is unset, the bp auto-routes to a JVMTI method-trace under the hood (line-rate). On the JVMTI path, the `log_message` is emitted **literally** — `{expr}` interpolation is NOT supported (the agent doesn't have a frame-evaluator). If you need interpolation in a method-bp logpoint, ALSO pass a `condition` (any truthy expression like `"true"`) to force the JDI path. Response includes `backend: "jvmti" | "jdi"` so you can confirm which path executed.
+
+Line breakpoints (`add_line_breakpoint`) always go through the JDI path and support full `{expr}` interpolation.
+
+### Cleaning up
+
+`list_logpoint_entries` is read-only — entries don't disappear when read; the buffer evicts at 1000 entries (oldest first). Remove the breakpoint via `remove_breakpoint(id)` when the investigation concludes; the buffer clears on `detach`.
+
+## HotSwap handoff (v1.5) — recommend, don't apply
+
+When your investigation concludes with a clear method-body-only fix and `agent_info.hot_swap_supported: true`, your job is to **recommend `/android-debugger:patch`** in the report — not to call `hot_swap_*` tools yourself.
+
+Why the orchestrator doesn't patch:
+- You're investigating autonomously. The user isn't watching every step. Applying a live mutation to a running app without the user seeing the diff violates the explain-first-fix-second contract.
+- `/android-debugger:patch` is an interactive skill with required `verify_via:` syntax — it edits source, recompiles via Gradle, diffs the build dir via `android-debugger-classdiff`, swaps, and verifies. That's a different surface and intentionally user-driven.
+
+What you do instead — emit a HotSwap-eligibility line in the report:
+
+- **Eligible** when ALL of the following:
+  - `hot_swap_supported: true`
+  - `minify_detected: false`
+  - The proposed fix is method-body-only (no field add/remove, no method add/remove, no superclass / interface / access-flag changes)
+  - The change is small enough to describe in one or two source-line edits
+
+- **Not eligible — explain why**:
+  - `hot_swap_supported: false` → device's ART doesn't expose `canRedefineClasses`
+  - `minify_detected: true` → recommend the user rebuild a debug variant first
+  - Fix requires a shape change → recommend a normal rebuild + reinstall
+
+When eligible, name the `:patch` invocation the user should run, including a concrete `verify_via:` clause derived from your evidence. Example:
+
+> **HotSwap-eligible:** Yes. Suggested invocation:
+> `/android-debugger:patch null-check user before calling .id in LoginViewModel.onLoginClick verify_via: tap login with no network; no NPE in logcat for 10 seconds`
+
+Be specific in the `verify_via:` — the `:patch` skill refuses to run without it.
+
 ## What to NEVER do
 
 - **Anti-hallucination + evaluate-safety:** apply the rules from `skills/explain/references/anti-hallucination.md` (canonical) — they apply doubly here since the user isn't seeing each snapshot. If you'd say "x is 5", `evaluate` it first; never invoke a mutating method without escalating to the user.
+- **Never call `hot_swap_class` / `hot_swap_classes` / `hot_swap_revert`.** HotSwap is a user-driven mutation surface owned by `/android-debugger:patch`. You recommend; you don't apply. See the HotSwap handoff section.
 - **Never run the app's destructive actions on their behalf.** "Tap delete account to reproduce" is a user action; you describe what to tap, you don't drive the device.
 - **Never claim you ran a smoke test you didn't actually run.** Honesty about uncertainty beats confident guessing.
 - **Never skip detach.** When the investigation concludes, unless the user hands the session back to interactive mode, leave the session attached so the user can drill in further. If the user's goal said "and detach when done", call `mcp__android-debugger__detach` at the end.
@@ -180,6 +277,10 @@ Always end with this shape so the main session can render it consistently:
 
 ### Proposed fix shape
 <Description of the fix (do NOT write code unless the user explicitly asked). Name the file/class/method that needs to change and the change shape: "in `Foo.bar`, null-check `user` before calling `.id`" beats "use Optional".>
+
+**HotSwap-eligible:** <Yes / No — see the HotSwap handoff section for the eligibility checklist.>
+<If yes: suggested `/android-debugger:patch <goal> verify_via: <criterion>` invocation, with the verify_via clause derived from the evidence above.>
+<If no: one-line reason (e.g., "minify_detected=true; rebuild as debug variant first" or "shape change required; needs rebuild + reinstall").>
 
 ### Repro recipe (if applicable)
 <Concrete steps the user can run to verify the fix once applied.>

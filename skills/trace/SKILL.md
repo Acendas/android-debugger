@@ -53,7 +53,9 @@ This is the highest-leverage workflow for ordering bugs, race conditions, and "I
    - Missing entries ("expected `AuthRepo.signOut` between 02 and 03 but didn't see it").
    - Repeated invocations ("step 04 ran 3 times — possible recomposition / leaked observer").
 
-10. **Propose** the hypothesis + suggested next move (drill in with `:explain` at a specific bp, set a conditional breakpoint to capture state on the next failing iteration, or fix the obvious thing).
+10. **Propose** the hypothesis + suggested next move (drill in with `:explain` at a specific bp, narrow the timeline with a conditional logpoint, or fix the obvious thing).
+
+10a. **Conditional logpoints for narrowing.** If the first sweep produced too much noise, re-place the noisiest logpoints with a `condition:` clause so they only fire under the failing predicate. The `condition` gate is checked BEFORE the log render — buffer stays clean. Example: change `add_line_breakpoint({ file, line, log_message: "..." })` to `add_line_breakpoint({ file, line, condition: "result.success = false", log_message: "..." })` to keep only the failing-case entries. Gates apply uniformly — `hit_count: 10` + `log_message` also works (log every 10th hit) for sampling hot paths.
 
 11. **Cleanup.** Ask the user if they want to keep the logpoints (for further runs) or remove them. On confirm, call `remove_breakpoint` for each id from `list_breakpoints`. Stop the logcat buffer with `stop_logcat`.
 

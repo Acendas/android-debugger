@@ -120,6 +120,8 @@ object BreakpointTools {
                 "`log_message` — turns the bp into a non-suspending logpoint with `{expr}` template " +
                 "syntax (e.g. `\"user={user.id} count={items.size()}\"`); rendered entries land in the " +
                 "logpoint ring buffer (see `list_logpoint_entries`). " +
+                "Gates apply uniformly: `condition` + `log_message` = conditional logpoint (log only when " +
+                "the predicate passes); `hit_count` + `log_message` = log only from the Nth hit onwards. " +
                 "Class-load deferred: works for not-yet-loaded classes via `ClassPrepareRequest`. " +
                 "Returns `{ ok, id, resolved_locations: N, deferred: bool }`.",
             inputSchema = ToolSchema(
@@ -266,7 +268,8 @@ object BreakpointTools {
                 "class; `method` is the simple method name (overloads all match). `kind` is `entry` " +
                 "or `exit`. Optional `log_message` turns this into a non-suspending logpoint (no " +
                 "`{expr}` interpolation in the JVMTI auto-route). Optional `condition` keeps the JDI " +
-                "path and gates suspension on a server-side expression. " +
+                "path and gates the bp on a server-side expression — combine with `log_message` for " +
+                "conditional logpoints (log only when the predicate passes). " +
                 "Auto-routes through the JVMTI agent's method-trace surface when the agent is " +
                 "loaded AND `log_message` is set AND `condition` is unset — the JVMTI path is " +
                 "natively per-method (no class-filter-then-match-in-handler), 10-100x cheaper on " +
