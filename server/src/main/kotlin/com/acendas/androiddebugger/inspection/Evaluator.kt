@@ -25,12 +25,9 @@ import com.sun.jdi.ReferenceType
 import com.sun.jdi.ThreadReference
 import com.sun.jdi.Value
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Expression evaluator backed by **kfeel** ([ca.acendas:kfeel:1.0.0], DMN 1.3 FEEL).
@@ -64,15 +61,12 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 object Evaluator {
 
-    private val mutex: Mutex = Mutex()
-    private val busy: AtomicBoolean = AtomicBoolean(false)
-
     /** Single-thread executor so all invokeMethod calls happen off the MCP coroutine pool. */
     private val executor = Executors.newSingleThreadExecutor { r ->
         Thread(r, "android-debugger-evaluator").apply { isDaemon = true }
     }
 
-    private const val DEFAULT_TIMEOUT_MS: Long = 10_000
+    private const val DEFAULT_TIMEOUT_MS: Long = VmCoordinator.EVAL_TIMEOUT_MS
 
     /**
      * Evaluate [expr] (a FEEL expression string) in the context of [thread]/[frameIdx].
@@ -99,27 +93,19 @@ object Evaluator {
         expr: String,
         timeoutMs: Long = DEFAULT_TIMEOUT_MS,
     ): FeelValue {
-        if (!busy.compareAndSet(false, true)) {
-            throw ToolError(
-                errorCode = ErrorCode.VmPaused,
-                message = "Another evaluation is already in flight on this session.",
-                hint = "Evaluator is single-flight to avoid `invokeMethod` deadlocks. Wait for the prior call to complete.",
-            )
-        }
-        return try {
-            // HACK: re-evaluate when the MCP SDK ships proper suspend handlers and the
-            // Evaluator can become a `suspend fun`. Currently called from both suspending
-            // tool contexts and the non-suspending JDI event-loop thread (conditional
-            // breakpoints, logpoint rendering), so runBlocking stays. Per R-03.
-            runBlocking {
-                mutex.withLock {
-                    withTimeout(timeoutMs) {
-                        evalInner(thread, frameIdx, expr)
-                    }
-                }
+        // v1.5 (spec §8): the eval/hot-swap single-flight mutex moved to VmCoordinator.
+        // Routing both eval_method and hot_swap_class through it prevents the
+        // "redefine while invoke runs" race that would leave the agent reading
+        // either old or new bytecode unpredictably.
+        //
+        // HACK: re-evaluate when the MCP SDK ships proper suspend handlers and the
+        // Evaluator can become a `suspend fun`. Currently called from both suspending
+        // tool contexts and the non-suspending JDI event-loop thread (conditional
+        // breakpoints, logpoint rendering), so runBlocking stays. Per R-03.
+        return runBlocking {
+            VmCoordinator.withExclusiveAccess("eval_method", timeoutMs) {
+                withTimeout(timeoutMs) { evalInner(thread, frameIdx, expr) }
             }
-        } finally {
-            busy.set(false)
         }
     }
 
@@ -139,24 +125,14 @@ object Evaluator {
         timeoutMs: Long = DEFAULT_TIMEOUT_MS,
         allowMutation: Boolean = false,
     ): FeelValue {
-        if (!busy.compareAndSet(false, true)) {
-            throw ToolError(
-                errorCode = ErrorCode.VmPaused,
-                message = "Another evaluation is already in flight on this session.",
-                hint = "Evaluator is single-flight. Wait for the prior call to complete.",
-            )
-        }
-        return try {
-            runBlocking {
-                mutex.withLock {
-                    withTimeout(timeoutMs) {
-                        val jdi = invokeRawInner(thread, frameIdx, target, methodName, args, allowMutation)
-                        FeelValueCodec.toFeel(jdi)
-                    }
+        // v1.5 — see VmCoordinator note in [evaluate].
+        return runBlocking {
+            VmCoordinator.withExclusiveAccess("eval_method", timeoutMs) {
+                withTimeout(timeoutMs) {
+                    val jdi = invokeRawInner(thread, frameIdx, target, methodName, args, allowMutation)
+                    FeelValueCodec.toFeel(jdi)
                 }
             }
-        } finally {
-            busy.set(false)
         }
     }
 

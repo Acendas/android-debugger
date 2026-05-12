@@ -135,6 +135,35 @@ open class DebugSession {
     /** v1.4 — open JSON-RPC client over the agent's Unix socket. Closed in [reset]. */
     @Volatile var agentClient: com.acendas.androiddebugger.jvmti.AgentClient? = null
 
+    /**
+     * v1.5 — detected at attach via [com.acendas.androiddebugger.hotswap.MinifyDetector].
+     * When true, `hot_swap_class` refuses with `minified_build_unsupported`.
+     */
+    @Volatile var minifyDetected: Boolean = false
+
+    /**
+     * v1.5 — Android API level of the attached device, used to drive the d8
+     * dexer's `--min-api` flag so the produced dex matches what ART can read.
+     * Populated at attach time from `getprop ro.build.version.sdk`. Falls back
+     * to 26 (v1.5 floor) on probe failure.
+     */
+    @Volatile var apiLevel: Int = 26
+
+    /**
+     * v1.5 — pre-swap class-bytes snapshot store, keyed by FQN. Captured on
+     * first redefine of each class via the agent's ClassFileLoadHook cache;
+     * consumed by `hot_swap_revert`. Per-session; cleared on detach.
+     */
+    val snapshotStore: com.acendas.androiddebugger.hotswap.SnapshotStore =
+        com.acendas.androiddebugger.hotswap.SnapshotStore()
+
+    /**
+     * v1.5 — server-side dexer instance, configured for the attached device's
+     * API level. Created at attach; reused for every hot_swap call this session.
+     * Null when unattached.
+     */
+    @Volatile var dexer: com.acendas.androiddebugger.hotswap.Dexer? = null
+
     /** Bump after any operation that changed the VM's run/pause state or frame stack. */
     fun bumpVmStateVersion(): Long {
         // Any state change invalidates the snapshot cache. Per Task 2.1.2.3.
@@ -180,6 +209,14 @@ open class DebugSession {
         runCatching { agentClient?.close() }
         agentClient = null
         agentState = null
+        // v1.5 — wipe hot-swap state. Snapshots are session-scoped per spec §13;
+        // app restart invalidates them anyway. The agent's own ClassFileLoadHook
+        // cache lives in the target process and survives our detach (until the
+        // app process dies).
+        minifyDetected = false
+        apiLevel = 26
+        dexer = null
+        snapshotStore.clear()
     }
 
     /**

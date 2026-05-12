@@ -203,6 +203,36 @@ object LifecycleTools {
         }
     }
 
+    /**
+     * v1.5 — resolve the device's Android API level (used by [Dexer] to set d8's
+     * `--min-api` flag). Order: parse `vm.version()` if it embeds an SDK int;
+     * else shell `getprop ro.build.version.sdk`; else fall back to API 26
+     * (v1.5 floor). Logs a warning on the fallback path because it implies the
+     * device's ART surface is unusual.
+     */
+    internal fun resolveDeviceApiLevel(vm: com.sun.jdi.VirtualMachine, serial: String?): Int {
+        // JDI's vm.version() format on ART is typically a free-form string
+        // ("Android Runtime 2.1.0", "ART, 14"). Most ART builds put the OS
+        // version (NOT SDK int) here, so we can't reliably parse it. Skip and
+        // go straight to getprop.
+        runCatching {
+            val res = Session.adb.runText(
+                args = listOfNotNull(
+                    "-s".takeIf { !serial.isNullOrBlank() }, serial,
+                    "shell", "getprop", "ro.build.version.sdk",
+                ),
+                timeoutMs = 3_000,
+            )
+            if (res is com.acendas.androiddebugger.adb.AdbResult.Success) {
+                val sdk = res.stdout.trim().toIntOrNull()
+                if (sdk != null && sdk in 1..99) return sdk
+            }
+        }
+        org.slf4j.LoggerFactory.getLogger("android-debugger.lifecycle")
+            .warn("Could not resolve device API level via getprop; falling back to 26 (v1.5 floor)")
+        return 26
+    }
+
     /** Resolve `(pid, package)` to a single target PID. `pid` always wins when given. */
     private fun resolveTargetPid(serial: String?, pid: Int?, pkg: String?): Int {
         if (pid != null) return pid
@@ -352,6 +382,20 @@ object LifecycleTools {
                 // gated tools can read them without re-probing.
                 Session.capabilities = caps
 
+                // v1.5 — resolve device API level so the embedded d8 dexer produces
+                // bytecode the device's ART version can read. Try parsing the JDI
+                // vm.version() first ("ART, 14" → 34); fall back to getprop. Final
+                // fallback is API 26 (v1.5 floor).
+                val resolvedApi = resolveDeviceApiLevel(vm, resolvedSerial)
+                Session.apiLevel = resolvedApi
+                Session.dexer = com.acendas.androiddebugger.hotswap.Dexer(resolvedApi)
+
+                // v1.5 — detect minified debug builds and surface as a warning. The
+                // hot_swap_class tool consults Session.minifyDetected and refuses
+                // upfront so the agent doesn't burn a Gradle cycle to discover this.
+                Session.minifyDetected =
+                    com.acendas.androiddebugger.hotswap.MinifyDetector.isMinifiedBuild(vm, pkg)
+
                 // Story 7.1.3: identify the Android UI thread by name so the ANR
                 // watchdog has a fixed reference. `name == "main"` on every Android
                 // app process; if we can't find one (rare, e.g. attaching to a system
@@ -369,6 +413,18 @@ object LifecycleTools {
                     }
                 }
                 val warnings = mutableListOf<kotlinx.serialization.json.JsonObject>()
+                if (Session.minifyDetected) {
+                    warnings += buildJsonObject {
+                        put("type", "minified_build_detected")
+                        put(
+                            "hint",
+                            "More than 50% of app classes have single-letter names — debug build appears " +
+                                "minified (R8/ProGuard). HotSwap and other class-FQN-driven features will " +
+                                "refuse with `minified_build_unsupported` until you set `minifyEnabled=false` " +
+                                "on the debug build variant.",
+                        )
+                    }
+                }
                 if (Capabilities.isLikelyReleaseBuild(vm)) {
                     warnings += buildJsonObject {
                         put("type", "release_build_likely")

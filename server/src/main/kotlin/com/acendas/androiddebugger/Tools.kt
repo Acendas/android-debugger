@@ -28,6 +28,8 @@ object Tools {
         com.acendas.androiddebugger.tools.AndroidTools.register(server)
         // v1.4 — JVMTI agent tools (agent_info, future v1.5+ hot_swap_class, etc.).
         com.acendas.androiddebugger.tools.AgentTools.register(server)
+        // v1.5 — HotSwap tools (hot_swap_class, hot_swap_classes, hot_swap_revert).
+        com.acendas.androiddebugger.tools.HotSwapTools.register(server)
     }
 
     private fun registerServerInfo(server: Server) {

@@ -15,18 +15,19 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 /**
- * R-08: cover the Evaluator's single-flight refusal. Two concurrent `evaluate` calls —
- * the first acquires the busy flag and holds it (we synchronize on a mock ThreadReference
- * that blocks on `frame(0)`), and the second observes busy = true and immediately throws
- * a structured [ToolError] with [ErrorCode.VmPaused].
+ * R-08 (v1.5-updated): cover the Evaluator's single-flight refusal. The mutex
+ * now lives in [VmCoordinator] (shared with HotSwap) and the refusal code is
+ * [ErrorCode.VmBusy] (not the old `vm_paused`) — per v1.5 spec §8 which renames
+ * the failure mode to match its actual meaning (mutex is busy, not "VM is paused").
  *
- * Adapted for v1.3 (Story A.1.5): the public API now takes a raw FEEL expression string
- * (`"1"`) instead of the v1.2 [Expr] AST. The single-flight contract is unchanged.
+ * Two concurrent `evaluate` calls — the first acquires VmCoordinator's mutex
+ * and blocks indefinitely on a synchronized mock; the second observes the
+ * mutex held and fails fast with structured [ToolError(VmBusy)].
  */
 class EvaluatorReentryTest {
 
     @Test
-    fun second_concurrent_evaluate_returns_vm_paused_error(): Unit = runBlocking {
+    fun second_concurrent_evaluate_returns_vm_busy_error(): Unit = runBlocking {
         val gate = Mutex(locked = true)
         val firstStarted = AtomicBoolean(false)
         val blockingThread = Mockito.mock(ThreadReference::class.java)
@@ -58,7 +59,7 @@ class EvaluatorReentryTest {
         val err = assertFailsWith<ToolError> {
             Evaluator.evaluate(secondThread, 0, "2")
         }
-        assertEquals(ErrorCode.VmPaused, err.errorCode)
+        assertEquals(ErrorCode.VmBusy, err.errorCode)
         assertTrue(
             (err.message ?: "").contains("Another evaluation is already in flight"),
             "Expected single-flight refusal message, got: ${err.message}",

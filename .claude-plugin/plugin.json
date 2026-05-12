@@ -1,7 +1,7 @@
 {
   "name": "android-debugger",
-  "version": "1.4.0",
-  "description": "AI-agent-driven Android debugger — exposes JDI/JDWP and a v1.4 JVMTI agent as MCP tools for Claude Code to drive. Set/conditional/hit-count/logpoint/exception/method/field/class-load breakpoints, watches, step over/into/out, evaluate DMN-FEEL expressions (kfeel-backed), inspect frames + locals + objects, persist breakpoint state across detach. v1.4 loads a small C++ JVMTI agent (arm64-v8a + x86_64 + armeabi-v7a) into the target app via `cmd activity attach-agent`, exposing ART's full capability surface via the new `agent_info` MCP tool — gateway for v1.5 HotSwap and v1.6 native-speed heap walks. Backed by a Kotlin MCP server using JDI (Java Debug Interface) over JDWP via adb forward. Designed for AI agents, not humans — every tool surface optimizes for agent legibility. Cross-platform: macOS, Linux, Windows.",
+  "version": "1.5.0",
+  "description": "AI-agent-driven Android debugger — exposes JDI/JDWP and a JVMTI agent as MCP tools for Claude Code to drive. v1.5 adds HotSwap: edit a method body, hot_swap_class (or hot_swap_classes batch) via JVMTI RedefineClasses, hot_swap_revert to roll back, all backed by embedded d8 that dexes JVM .class bytes server-side. Includes goal-driven /android-debugger:patch skill — edit-build-swap-verify in one autonomous loop with caller-supplied verify_via. Pre-validates shape changes (method-add/remove, field-add/remove, signature flips) via ASM and returns structured diffs before hitting JVMTI. Capability-gated force_re_enter via JVMTI PopFrame for paused-in-method swaps. Minified debug builds detected at attach and refused upfront. Plus everything from v1.0–v1.4: breakpoints (line, conditional, hit-count, logpoint, exception, method, field, class-load), watches, step, FEEL expression evaluation (kfeel), eval_method with mutation refusal, frame snapshots, logcat, heap dump, session persistence, and the C++ JVMTI agent (3 ABIs). Cross-platform: macOS, Linux, Windows.",
   "author": {
     "name": "Acendas",
     "email": "info@acendas.ca"
@@ -37,6 +37,11 @@
     "jvmti-agent",
     "hot-swap",
     "redefine-classes",
+    "d8",
+    "r8",
+    "asm",
+    "patch",
+    "pop-frame",
     "ndk",
     "acendas"
   ],
@@ -65,6 +70,11 @@
     "compose-debugging",
     "flaky-test-bisect",
     "explain-first-debugging",
+    "hot-swap",
+    "patch-workflow",
+    "redefine-classes",
+    "force-re-enter",
+    "minify-detection",
     "mcp-server",
     "cross-platform"
   ]

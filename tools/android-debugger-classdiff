@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Cross-platform wrapper: invokes the Node CLI. Symlink-aware so
+# `/usr/local/bin/android-debugger-classdiff -> <plugin>/tools/...` works.
+set -e
+
+resolve_self() {
+    local target="$0"
+    while [ -L "$target" ]; do
+        local next
+        next="$(readlink "$target")"
+        case "$next" in
+            /*) target="$next" ;;
+            *)  target="$(cd "$(dirname "$target")" && pwd)/$next" ;;
+        esac
+    done
+    echo "$target"
+}
+
+SELF="$(resolve_self)"
+BIN_DIR="$(cd "$(dirname "$SELF")" && pwd)"
+exec node "$BIN_DIR/android-debugger-classdiff.mjs" "$@"

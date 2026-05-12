@@ -6,10 +6,12 @@ plugins {
 }
 
 group = "com.acendas.androiddebugger"
-version = "1.4.0"
+version = "1.5.0"
 
 repositories {
     mavenCentral()
+    // v1.5 — r8 is published on Google's Maven repo, not Central. Same repo AGP uses.
+    google()
 }
 
 dependencies {
@@ -33,6 +35,19 @@ dependencies {
     // methodName, [args])` as the explicit escape hatch so mutation is grep-able by
     // the consuming AI agent.
     implementation("ca.acendas:kfeel:1.0.0")
+
+    // v1.5 — HotSwap pipeline:
+    //   - r8 (which ships D8) takes JVM .class bytes and produces single-class .dex
+    //     bytes the JVMTI agent feeds to ART's RedefineClasses. We embed d8 server-side
+    //     so the agent (Claude) doesn't need Android SDK tooling on PATH. r8 8.x is the
+    //     same library AGP uses internally; ~8 MB to the fat jar.
+    //   - ASM is used for the ClassDiff pre-validate (compare method/field signatures,
+    //     superclass, interfaces, access flags between old and new .class bytes before
+    //     handing to ART). r8 transitively pulls ASM in but we declare it explicitly so
+    //     a future r8 bump that drops the transitive doesn't silently break us.
+    implementation("com.android.tools:r8:8.7.18")
+    implementation("org.ow2.asm:asm:9.7.1")
+    implementation("org.ow2.asm:asm-tree:9.7.1")
 
     // JDI is bundled with the JDK at com.sun.jdi — no extra dependency needed.
     // It's added to the classpath via tools/lib in older JDKs; on JDK 9+ it lives in jdk.jdi module.
@@ -178,9 +193,13 @@ tasks.register("checkAgents") {
 }
 
 // Per R-29: regression-test jar size. Fails the build if the fat jar grows beyond the
-// threshold so we don't silently re-bloat after R-09. Cap raised 10 MB → 20 MB in
-// v1.4 to absorb the agent .so files (~660 KB total) plus headroom for v1.5+.
-val maxFatJarBytes: Long = 20L * 1024L * 1024L // 20 MB (was 10 MB pre-v1.4)
+// threshold so we don't silently re-bloat after R-09. Cap history:
+//   pre-v1.4: 10 MB
+//   v1.4:     20 MB (absorbs the agent .so files ~660 KB + headroom)
+//   v1.5:     25 MB (embeds r8/d8 for HotSwap dexing pipeline, +~8 MB)
+// r8 internals are heavily obfuscated/repackaged; selective exclusion risks breaking d8,
+// so we raise the cap rather than trim the dependency.
+val maxFatJarBytes: Long = 25L * 1024L * 1024L // 25 MB
 
 tasks.register("checkJarSize") {
     description = "Fail the build if the shaded fat jar exceeds the configured size cap."

@@ -10,6 +10,8 @@ import io.modelcontextprotocol.kotlin.sdk.types.ToolAnnotations
 import io.modelcontextprotocol.kotlin.sdk.types.ToolSchema
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonObjectBuilder
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
@@ -71,6 +73,20 @@ object AgentTools {
             put("host_socket", state.hostSocketPath.toString())
         })
         put("capabilities", state.capabilities as JsonObject)
+        // v1.5 — derived feature-readiness flags so the agent doesn't re-derive them from
+        // the raw capability map. Per spec §3.4.
+        val caps = state.capabilities
+        val canRedefine = (caps["can_redefine_classes"] as? JsonPrimitive)?.booleanOrNull == true
+        val canRetransform = (caps["can_retransform_classes"] as? JsonPrimitive)?.booleanOrNull == true
+        val canPopFrame = (caps["can_pop_frame"] as? JsonPrimitive)?.booleanOrNull == true
+        put("hot_swap_supported", canRedefine && canRetransform && !Session.minifyDetected)
+        put("force_re_enter_supported", canPopFrame)
+        put("minify_detected", Session.minifyDetected)
+        put("device_api_level", Session.apiLevel)
+        // Reserved for forward compat — ART today rejects method/field add via JVMTI.
+        // We surface as false so the agent doesn't speculatively offer them.
+        put("redefine_method_added_supported", false)
+        put("redefine_field_added_supported", false)
         state.crashedLastSession?.let { c ->
             put("crashed_last_session", renderCrashRecord(c))
         }
