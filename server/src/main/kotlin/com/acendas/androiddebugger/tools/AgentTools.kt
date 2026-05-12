@@ -87,6 +87,19 @@ object AgentTools {
         // We surface as false so the agent doesn't speculatively offer them.
         put("redefine_method_added_supported", false)
         put("redefine_field_added_supported", false)
+        // v1.6 — derived feature-readiness flags. Per spec §6/§11. `can_tag_objects` is
+        // the gate for all heap walks; `can_generate_method_entry_events` + exit gate the
+        // method-trace surface; `can_generate_vm_object_alloc_events` gates alloc trace.
+        // We deliberately don't check `can_get_class_signature` — every JVMTI env can
+        // call GetClassSignature, so it's not a separately-probed capability.
+        val canTagObjects = (caps["can_tag_objects"] as? JsonPrimitive)?.booleanOrNull == true
+        val canMethodEntry = (caps["can_generate_method_entry_events"] as? JsonPrimitive)?.booleanOrNull == true
+        val canMethodExit = (caps["can_generate_method_exit_events"] as? JsonPrimitive)?.booleanOrNull == true
+        val canAlloc = (caps["can_generate_vm_object_alloc_events"] as? JsonPrimitive)?.booleanOrNull == true
+        put("heap_walk_supported", canTagObjects)
+        put("method_trace_supported", canMethodEntry && canMethodExit)
+        put("alloc_trace_supported", canAlloc && canTagObjects)
+        put("referrer_chain_supported", canTagObjects)
         state.crashedLastSession?.let { c ->
             put("crashed_last_session", renderCrashRecord(c))
         }

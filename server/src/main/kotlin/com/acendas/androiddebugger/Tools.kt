@@ -30,6 +30,12 @@ object Tools {
         com.acendas.androiddebugger.tools.AgentTools.register(server)
         // v1.5 — HotSwap tools (hot_swap_class, hot_swap_classes, hot_swap_revert).
         com.acendas.androiddebugger.tools.HotSwapTools.register(server)
+        // v1.6 — JVMTI-backed heap walks (iterate_heap_by_class, find_referrer_chain)
+        // and method-/alloc-trace surfaces. count_instances + find_referrers already
+        // auto-route in WatchTools; add_method_breakpoint auto-routes in BreakpointTools.
+        com.acendas.androiddebugger.tools.HeapTools.register(server)
+        com.acendas.androiddebugger.tools.MethodTraceTools.register(server)
+        com.acendas.androiddebugger.tools.AllocTraceTools.register(server)
     }
 
     private fun registerServerInfo(server: Server) {

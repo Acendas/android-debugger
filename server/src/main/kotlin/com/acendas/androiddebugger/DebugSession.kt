@@ -7,6 +7,7 @@ import com.acendas.androiddebugger.inspection.WatchManager
 import com.sun.jdi.ThreadReference
 import com.sun.jdi.VirtualMachine
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.runBlocking
@@ -164,6 +165,32 @@ open class DebugSession {
      */
     @Volatile var dexer: com.acendas.androiddebugger.hotswap.Dexer? = null
 
+    /**
+     * v1.6 — active method-trace buffer ids on the JVMTI agent. Populated by
+     * [com.acendas.androiddebugger.tools.MethodTraceTools] on `start_method_trace`;
+     * removed on `stop_method_trace`. Drained at detach via
+     * `AgentMethodTrace.stopAll` so traces don't outlive the session.
+     */
+    @Volatile var methodTraceBufferIds: MutableSet<String> =
+        java.util.concurrent.ConcurrentHashMap.newKeySet()
+
+    /**
+     * v1.6 — active alloc-trace buffer ids on the JVMTI agent. Same lifecycle
+     * pattern as [methodTraceBufferIds]. `agent.stop_all_traces` covers both
+     * surfaces in a single RPC so detach only needs one call.
+     */
+    @Volatile var allocTraceBufferIds: MutableSet<String> =
+        java.util.concurrent.ConcurrentHashMap.newKeySet()
+
+    /**
+     * v1.6 — coroutine scope for per-breakpoint JVMTI poll loops (e.g., method
+     * breakpoints auto-routed through `agent.method_trace_*`). Initialized in
+     * [com.acendas.androiddebugger.jvmti.JvmtiAgentLauncher.launch] after the
+     * agent client is set; cancelled in [reset] before the agent client is
+     * nulled out.
+     */
+    @Volatile var v16PollScope: kotlinx.coroutines.CoroutineScope? = null
+
     /** Bump after any operation that changed the VM's run/pause state or frame stack. */
     fun bumpVmStateVersion(): Long {
         // Any state change invalidates the snapshot cache. Per Task 2.1.2.3.
@@ -202,6 +229,25 @@ open class DebugSession {
         eventChannel = null
         anrWatchdog = null
         socketWedgeRecovery = null
+        // v1.6 — close any active trace sessions before the agent socket dies.
+        // `agent.stop_all_traces` covers BOTH method and alloc traces in one RPC,
+        // so we only need to fire it once.
+        runCatching {
+            val client = agentClient
+            if (client != null && (methodTraceBufferIds.isNotEmpty() || allocTraceBufferIds.isNotEmpty())) {
+                runBlocking {
+                    kotlinx.coroutines.withTimeoutOrNull(2_000) {
+                        com.acendas.androiddebugger.jvmti.AgentMethodTrace.stopAll(client)
+                    }
+                }
+            }
+        }
+        methodTraceBufferIds.clear()
+        allocTraceBufferIds.clear()
+        // v1.6 — cancel per-bp poll coroutines BEFORE the agent client closes so
+        // they don't see EOF mid-read and surface noisy errors. Best-effort.
+        runCatching { v16PollScope?.cancel() }
+        v16PollScope = null
         // v1.4 — close the agent IPC socket but DON'T attempt to unload the
         // agent (JVMTI doesn't support unload). The agent stays loaded in the
         // app process until the process dies. Next attach to the same app

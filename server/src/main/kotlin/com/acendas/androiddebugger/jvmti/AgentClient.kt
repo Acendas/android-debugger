@@ -46,7 +46,7 @@ import java.util.concurrent.atomic.AtomicLong
  * Lifetime: opened in [JvmtiAgentLauncher.openClient]; closed in
  * [com.acendas.androiddebugger.Session.reset].
  */
-class AgentClient(
+open class AgentClient(
     private val hostSocketPath: Path,
     private val reconnect: suspend () -> AgentClient,
 ) : AutoCloseable {
@@ -67,7 +67,7 @@ class AgentClient(
 
     /** Open the socket. Idempotent — re-opens if previously closed. */
     @Synchronized
-    fun ensureOpen() {
+    open fun ensureOpen() {
         if (channel?.isOpen == true) return
         close()
         val addr = UnixDomainSocketAddress.of(hostSocketPath)
@@ -83,7 +83,7 @@ class AgentClient(
      * Send the JSON-RPC `hello` handshake. Must succeed before any other call.
      * Throws [ToolError] on protocol mismatch.
      */
-    suspend fun hello(protocolVersion: Int = 1): JsonObject = mutex.withLock {
+    open suspend fun hello(protocolVersion: Int = 1): JsonObject = mutex.withLock {
         ensureOpen()
         val params = buildJsonObject { put("protocol_version", protocolVersion) }
         val result = sendRaw("hello", params)
@@ -94,7 +94,7 @@ class AgentClient(
      * Generic request. Caller passes method name + optional params; gets back the
      * `result` JSON element. JSON-RPC errors are translated to [AgentRpcError].
      */
-    suspend fun request(
+    open suspend fun request(
         method: String,
         params: JsonObject? = null,
         timeoutMs: Long = 10_000L,

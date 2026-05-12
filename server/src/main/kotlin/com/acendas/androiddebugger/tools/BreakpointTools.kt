@@ -11,6 +11,8 @@ import com.acendas.androiddebugger.breakpoints.LogpointBuffer
 import com.acendas.androiddebugger.breakpoints.SourceResolver
 import com.acendas.androiddebugger.runTool
 import com.acendas.androiddebugger.toolOk
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import com.sun.jdi.ClassType
 import com.sun.jdi.ReferenceType
 import com.sun.jdi.VirtualMachine
@@ -260,12 +262,17 @@ object BreakpointTools {
     private fun registerAddMethodBreakpoint(server: Server) {
         server.addTool(
             name = "add_method_breakpoint",
-            description = "Pause on method entry or exit. `class` is the fully-qualified declaring class; " +
-                "`method` is the simple method name (overloads all match). `kind` is `entry` or `exit`. " +
-                "Internally uses MethodEntryRequest/MethodExitRequest with a class filter; per-method " +
-                "matching happens in the event handler (JDI doesn't support per-method native filters). " +
-                "Be aware: a hot class can fire thousands of method events per second. The agent should " +
-                "use this surgically.",
+            description = "Pause on method entry or exit. `class` is the fully-qualified declaring " +
+                "class; `method` is the simple method name (overloads all match). `kind` is `entry` " +
+                "or `exit`. Optional `log_message` turns this into a non-suspending logpoint (no " +
+                "`{expr}` interpolation in the JVMTI auto-route). Optional `condition` keeps the JDI " +
+                "path and gates suspension on a server-side expression. " +
+                "Auto-routes through the JVMTI agent's method-trace surface when the agent is " +
+                "loaded AND `log_message` is set AND `condition` is unset — the JVMTI path is " +
+                "natively per-method (no class-filter-then-match-in-handler), 10-100x cheaper on " +
+                "hot classes. Response carries `backend: \"jvmti\"|\"jdi\"`. " +
+                "Be aware: a hot class on the JDI path can fire thousands of method events per " +
+                "second. The agent should use this surgically.",
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
                     putJsonObject("class") {
@@ -279,6 +286,21 @@ object BreakpointTools {
                     putJsonObject("kind") {
                         put("type", "string")
                         put("description", "`entry` (default) or `exit`.")
+                    }
+                    putJsonObject("log_message") {
+                        put("type", "string")
+                        put(
+                            "description",
+                            "Optional. Logpoint message — turns the bp into a non-suspending logpoint. " +
+                                "Auto-routes through JVMTI when the agent is loaded; no `{expr}` interpolation on the JVMTI path.",
+                        )
+                    }
+                    putJsonObject("condition") {
+                        put("type", "string")
+                        put(
+                            "description",
+                            "Optional. Server-side predicate; keeps the JDI path even when `log_message` is set.",
+                        )
                     }
                 },
                 required = listOf("class", "method"),
@@ -301,7 +323,69 @@ object BreakpointTools {
                         message = "kind must be 'entry' or 'exit'; got '$kindStr'.",
                     )
                 }
+                val logMessage = (args.get("log_message") as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() }
+                val condition = (args.get("condition") as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() }
 
+                // v1.6 auto-route: a method bp with a logMessage and no condition can ride
+                // the JVMTI method-trace surface, which is natively per-method (vs. the JDI
+                // path which fires ClassEntry then matches in the handler). Falls through
+                // to the JDI path when the conditions aren't met.
+                val agentClient = Session.agentClient
+                val canMethodEntryEvents = (Session.agentState?.capabilities?.get("can_generate_method_entry_events")
+                    as? JsonPrimitive)?.booleanOrNull == true
+                val canUseJvmti = agentClient != null
+                    && canMethodEntryEvents
+                    && logMessage != null
+                    && condition == null
+                if (canUseJvmti) {
+                    val methodKey = toJvmSignature(cls) + method
+                    val kinds = if (isEntry) setOf(com.acendas.androiddebugger.jvmti.AgentMethodTrace.EventKind.ENTRY)
+                        else setOf(com.acendas.androiddebugger.jvmti.AgentMethodTrace.EventKind.EXIT)
+                    val req = com.acendas.androiddebugger.jvmti.AgentMethodTrace.StartRequest(
+                        filterKind = com.acendas.androiddebugger.jvmti.AgentMethodTrace.FilterKind.METHODS,
+                        methods = listOf(methodKey),
+                        kinds = kinds,
+                        includeArgs = false,
+                        includeReturn = false,
+                    )
+                    val startResult = com.acendas.androiddebugger.jvmti.AgentMethodTrace.start(agentClient, req)
+                    val id = BreakpointManager.mintId()
+                    val meta = BreakpointMeta(
+                        id = id,
+                        kind = if (isEntry) BreakpointKind.METHOD_ENTRY else BreakpointKind.METHOD_EXIT,
+                        methodClass = cls,
+                        methodName = method,
+                        logMessage = logMessage,
+                        jvmtiTraceBufferId = startResult.bufferId,
+                    )
+                    BreakpointManager.register(meta)
+                    Session.methodTraceBufferIds.add(startResult.bufferId)
+
+                    // Spawn a poll coroutine that drains the trace buffer every 500 ms
+                    // and pushes each event into the LogpointBuffer. Lives on
+                    // Session.v16PollScope so cancellation on detach is clean.
+                    val pollScope = Session.v16PollScope
+                    if (pollScope != null) {
+                        startBreakpointPoll(
+                            scope = pollScope,
+                            meta = meta,
+                            bufferId = startResult.bufferId,
+                            agentClient = agentClient,
+                        )
+                    }
+
+                    return@runTool toolOk {
+                        put("id", id)
+                        put("class", cls)
+                        put("method", method)
+                        put("kind", if (isEntry) "entry" else "exit")
+                        put("log_message", logMessage)
+                        put("backend", "jvmti")
+                        put("buffer_id", startResult.bufferId)
+                    }
+                }
+
+                // JDI path. Conditions / suspending bps stay here.
                 val id = BreakpointManager.mintId()
                 if (isEntry) {
                     BreakpointInstaller.installMethodEntry(vm, id, cls, method)
@@ -313,7 +397,57 @@ object BreakpointTools {
                     put("class", cls)
                     put("method", method)
                     put("kind", if (isEntry) "entry" else "exit")
+                    put("backend", "jdi")
                 }
+            }
+        }
+    }
+
+    /** Convert FQN to JVM signature (`com.example.Foo` -> `Lcom/example/Foo;`). */
+    private fun toJvmSignature(fqn: String): String =
+        "L" + fqn.replace('.', '/') + ";"
+
+    /**
+     * Spawn a coroutine on [scope] that drains [bufferId] every 500 ms and emits one
+     * [com.acendas.androiddebugger.breakpoints.LogpointEntry] per event into
+     * [com.acendas.androiddebugger.breakpoints.LogpointBuffer]. Best-effort: read
+     * errors get logged + retried; the loop exits on scope cancellation.
+     *
+     * Caveat: on cancellation the trace session stays running on the agent until
+     * the detach path's `stopAll` fires. That's acceptable — the agent side is
+     * lightweight and detach always closes both surfaces in one RPC.
+     */
+    private fun startBreakpointPoll(
+        scope: kotlinx.coroutines.CoroutineScope,
+        meta: BreakpointMeta,
+        bufferId: String,
+        agentClient: com.acendas.androiddebugger.jvmti.AgentClient,
+    ) {
+        val log = org.slf4j.LoggerFactory.getLogger("android-debugger.bp-jvmti-poll")
+        scope.launch {
+            while (isActive) {
+                try {
+                    val result = com.acendas.androiddebugger.jvmti.AgentMethodTrace.read(
+                        agentClient, bufferId, max = 500,
+                    )
+                    for (e in result.events) {
+                        if (!meta.enabled) continue
+                        com.acendas.androiddebugger.breakpoints.LogpointBuffer.push(
+                            threadName = e.thread,
+                            file = null,
+                            line = -1,
+                            breakpointId = meta.id,
+                            rendered = meta.logMessage ?: "",
+                        )
+                        meta.logpointEntries.incrementAndGet()
+                        meta.totalHits.incrementAndGet()
+                    }
+                } catch (ce: kotlinx.coroutines.CancellationException) {
+                    throw ce
+                } catch (t: Throwable) {
+                    log.debug("poll error for bp {} buffer {}: {}", meta.id, bufferId, t.message)
+                }
+                kotlinx.coroutines.delay(500)
             }
         }
     }
@@ -408,7 +542,9 @@ object BreakpointTools {
     private fun registerRemoveBreakpoint(server: Server) {
         server.addTool(
             name = "remove_breakpoint",
-            description = "Delete a breakpoint by id. Idempotent. Returns `{ ok, removed: bool }`.",
+            description = "Delete a breakpoint by id. Idempotent. Returns `{ ok, removed: bool }`. " +
+                "If the breakpoint was auto-routed through JVMTI (method bp + log_message + " +
+                "agent loaded), the underlying method-trace session is stopped too (best-effort).",
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
                     putJsonObject("id") {
@@ -424,6 +560,19 @@ object BreakpointTools {
                 val vm = Session.requireAttached()
                 val id = (request.arguments?.get("id") as? JsonPrimitive)?.intOrNull
                     ?: throw ToolError(ErrorCode.InvalidTarget, "Missing `id`.")
+                // v1.6: look up meta BEFORE remove so we can drain its JVMTI trace
+                // session if it has one. The bp poll coroutine will exit on its own
+                // (scope cancellation on detach) or when the bp's enabled flag drops
+                // — meanwhile draining the agent buffer here is cheap and clean.
+                val meta = BreakpointManager.get(id)
+                val jvmtiBuf = meta?.jvmtiTraceBufferId
+                val agentClient = Session.agentClient
+                if (jvmtiBuf != null && agentClient != null) {
+                    runCatching {
+                        com.acendas.androiddebugger.jvmti.AgentMethodTrace.stop(agentClient, jvmtiBuf)
+                    }
+                    Session.methodTraceBufferIds.remove(jvmtiBuf)
+                }
                 val removed = BreakpointManager.remove(vm, id)
                 toolOk {
                     put("removed", removed)

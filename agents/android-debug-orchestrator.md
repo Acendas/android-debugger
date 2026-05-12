@@ -82,6 +82,76 @@ If the dispatch prompt contains the marker `[orchestrator note: session is attac
 6. Stop after the user's logical scope (returned out of all frames the original entry breakpoint reached).
 7. Compose the final report as a numbered walkthrough.
 
+## v1.6 features — heap walks, method tracing, allocation tracing
+
+When the JVMTI agent is loaded (`agent_info.loaded: true`), four additional surfaces are available. Use the right one for the shape of the question.
+
+**Always check capability flags from `agent_info` before reaching for these:**
+- `heap_walk_supported` → gates `count_instances` (JVMTI path), `iterate_heap_by_class`, `find_referrers` (`vobj#` route), `find_referrer_chain`.
+- `method_trace_supported` → gates `start_method_trace`.
+- `alloc_trace_supported` → gates `start_alloc_trace`.
+- `referrer_chain_supported` → same as `heap_walk_supported`; surfaced separately for symmetry.
+
+If a flag is false, fall back to the JDI path (heap walks) or skip the surface (tracing) and document the limitation in your report.
+
+### Heap walks — when to use which
+
+| Question | Tool |
+|---|---|
+| "How many instances of X are alive?" | `count_instances({class_signature})` — auto-routes to JVMTI when present; backend field in response says `"jvmti"` (10–100× faster than the JDI fallback). |
+| "Show me the actual instances + sizes" | `iterate_heap_by_class({class_signature, max})` — agent-only; returns `vobj#` refs you can pass to find_referrers/find_referrer_chain. |
+| "What's keeping object X alive (1 hop back)?" | `find_referrers({ref, max})` — route depends on ref prefix: `vobj#` → JVMTI; `obj#` (from frame_snapshot/etc.) → JDI. |
+| "Trace the GC-root path holding X alive" | `find_referrer_chain({ref:"vobj#…", max_depth, max_chains})` — agent-only; returns chains with `root_kind` (jni_global, static_field, stack_local, …). Use this for leak hunting. |
+
+JVMTI path returns `vobj#NNN` refs (separate namespace from JDI's `obj#NNN`); pass them only to v1.6 heap tools. Don't try to `inspect_object("vobj#…")` — that's JDI-only.
+
+Class signatures use JVM internal form: `Lcom/example/Foo;` (not `com.example.Foo`). The count_instances/iterate tools accept either form (FQN auto-converted on the server); raw heap tools require the JVM form.
+
+Heap walks are coordinated single-flight — one heap walk at a time per session (30 s timeout). They block against `eval_method` and `hot_swap_*` but NOT against tracing (those run independently).
+
+### Method tracing — for "where does X get called?"
+
+Use this when the question is about call ordering, who-calls-whom, or hot-path detection. Lifecycle: `start_method_trace` → exercise the app → `read_method_trace` (drain) → `stop_method_trace`.
+
+Filter strictly. Method-entry/exit fires per VM event — a trace covering `kotlin.*` or `*.*` will blow the leaky bucket (default 1000 events/sec) and produce mostly `dropped_total > 0`. Pick the narrowest filter that captures the question:
+
+- **`filter_kind:"methods"`** with an explicit `Lcom/foo/Bar;methodName` list — fastest filter, O(1) hash lookup per event. Prefer this when the method set is known.
+- **`filter_kind:"class_pattern"`** with literal prefix (e.g., `com.example.app.*`) — pre-compiled to a jclass allowlist; nearly free per event.
+- **`filter_kind:"class_pattern"`** with leading wildcard (`*Activity`) — falls back to per-event strcmp; ~10× slower than literal prefix.
+- **`filter_kind:"method_regex"`** — full regex evaluation per event; reserve for "I don't know the class set but know the method name pattern".
+
+Optional fields:
+- `include_args: true` — emits arg names + types + values per entry. Object refs render as `j@<hex>`; primitives render natively. Adds ~500ns per event on ARMv7 — at 10 kHz trace rate that's 5% CPU. Document if you turn it on.
+- `include_return: true` — emits return value on exit + `void: true` for void methods + `was_popped_by_exception: true` when a thrown exception unwound the frame.
+- `kinds: ["entry"]` or `["exit"]` — half the volume.
+- `sample_rate: 0.1` — random 10% sample. Entry/exit symmetry is preserved (matched pairs).
+
+After every `read_method_trace`, check `dropped_since_last_read` and `dropped_total`. If they grow, your filter is too wide or `max_events_per_sec` is too low — refine.
+
+### Allocation tracing — for "what's allocating during X?"
+
+Use this when the question is about memory pressure, GC churn, or "why is this scroll laggy". Same lifecycle shape: `start_alloc_trace` → exercise → `read_alloc_trace` → `stop_alloc_trace`.
+
+`classes` is required and must be specific — there's no match-all mode (would generate millions of events on a scroll). Resolve the class FQNs to JVM signatures first; the response's `unresolved_classes` lists any that weren't loaded yet (call the code path that loads them, then retry start).
+
+`capture_stack_depth` tradeoff:
+- `0` (default) — no stack; events are `{class, thread, nano_time, size_bytes}`. Free.
+- `1–10` — captures up to N frames per event. ~5 μs/event at depth 5 on ARMv7. At 10 kHz trace rate that's 5% CPU. Use sparingly — `3–5` is usually plenty for "who allocated this".
+
+`vobj#` ref-ids are NOT issued for allocation events. v1.6 reports the allocation metadata but does NOT retain the allocated objects (would survive GC and break heap measurements). Use a follow-up `iterate_heap_by_class` to inspect survivors.
+
+### The `backend` field
+
+Tools that auto-route (`count_instances`, `find_referrers`, `add_method_breakpoint`) include `"backend": "jvmti" | "jdi"` in their response so you can confirm which path executed. If you expected JVMTI but got JDI, check `agent_info.loaded`.
+
+### `add_method_breakpoint` auto-route
+
+When you set `log_message` (and don't set `condition`), the method bp auto-routes to a JVMTI-backed trace under the hood — gives you the same non-suspending logpoint behavior at native speed. Response includes `backend: "jvmti"` + `buffer_id` of the underlying trace. `remove_breakpoint` cleans up both sides. Caveat: `{expr}` template interpolation is NOT supported on the JVMTI path — the literal `log_message` is what gets emitted to the logpoint buffer. If you need interpolation, drop `log_message` and use a regular line breakpoint with `log_message` instead (JDI path).
+
+### Detach cleans up
+
+`detach` (or session reset on disconnect) calls `agent.stop_all_traces` automatically — every active method/alloc trace is closed and the JVMTI event callbacks are disabled. You don't need to manually `stop_*_trace` before detaching, but doing so is idempotent + good hygiene.
+
 ## What to NEVER do
 
 - **Anti-hallucination + evaluate-safety:** apply the rules from `skills/explain/references/anti-hallucination.md` (canonical) — they apply doubly here since the user isn't seeing each snapshot. If you'd say "x is 5", `evaluate` it first; never invoke a mutating method without escalating to the user.

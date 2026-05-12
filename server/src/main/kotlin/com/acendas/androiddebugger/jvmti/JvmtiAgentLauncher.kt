@@ -33,11 +33,13 @@ object JvmtiAgentLauncher {
 
     /**
      * Wire protocol version negotiated with the agent. v1.4 = 1; v1.5 = 2 (adds
-     * `agent.redefine_classes`, `agent.pop_frame`, `agent.get_original_class_bytes`).
-     * Bumped per spec §4: old agent + new server → handshake refuses with
-     * structured `agent_version_mismatch` so users know to re-push the agent.
+     * `agent.redefine_classes`, `agent.pop_frame`, `agent.get_original_class_bytes`);
+     * v1.6 = 3 (adds `agent.heap_*`, `agent.method_trace_*`, `agent.alloc_trace_*`,
+     * `agent.stop_all_traces`). Bumped per spec §4: old agent + new server → handshake
+     * refuses with structured `agent_version_mismatch` so users know to re-push the
+     * agent (which auto-loads on the next attach now that the .so is in dist/).
      */
-    private const val PROTOCOL_VERSION = 2
+    private const val PROTOCOL_VERSION = 3
     private val SUPPORTED_ABIS = setOf("arm64-v8a", "x86_64", "armeabi-v7a")
 
     /** Studio's Apply Changes agent leaves these recognizable patterns in `/proc/<pid>/maps`. */
@@ -111,6 +113,13 @@ object JvmtiAgentLauncher {
         )
         Session.agentState = state
         Session.agentClient = transport.client
+        // v1.6 — supervisor scope for per-bp JVMTI poll coroutines (method-bp
+        // auto-route to method-trace surface). One scope per session; cancelled
+        // in [DebugSession.reset] before the agent client closes so polls don't
+        // see mid-read EOF.
+        Session.v16PollScope = kotlinx.coroutines.CoroutineScope(
+            kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO,
+        )
         log.info(
             "JVMTI agent v${state.agentVersion} attached to {} (pid={}, abi={})",
             packageName, pid, abi,

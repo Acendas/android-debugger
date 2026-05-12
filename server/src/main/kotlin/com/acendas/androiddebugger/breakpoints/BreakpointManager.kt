@@ -68,6 +68,13 @@ data class BreakpointMeta(
     val fieldName: String? = null,
     /** Class-load breakpoints (v1.3). Glob-style pattern per JDWP: `com.example.*`, `*.MyService`. */
     val classPattern: String? = null,
+    /**
+     * v1.6 — when a method breakpoint with a `logMessage` (no condition) is auto-routed
+     * through the JVMTI agent's method-trace surface, this carries the agent-side buffer
+     * id. Read in [BreakpointTools]'s `remove_breakpoint` so the underlying trace
+     * session is stopped when the breakpoint is removed.
+     */
+    val jvmtiTraceBufferId: String? = null,
 ) {
 
     /** Live JDI requests created for this meta. Plural because a line can resolve to multiple locations. */

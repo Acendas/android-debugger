@@ -8,16 +8,21 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 # Version + protocol-version are stamped into the binary at build time.
 # Kotlin side asserts an exact match on `attach-agent`'s options string.
 if(NOT DEFINED AGENT_VERSION_STR)
-    set(AGENT_VERSION_STR "1.5.0")
+    set(AGENT_VERSION_STR "1.6.0")
 endif()
 if(NOT DEFINED AGENT_PROTOCOL_VERSION_INT)
-    # v1.5 bumps the wire protocol from 1 to 2. New JSON-RPC methods:
-    #   agent.redefine_classes          — JVMTI RedefineClasses
-    #   agent.pop_frame                  — JVMTI PopFrame (capability-gated)
-    #   agent.get_original_class_bytes   — returns ClassFileLoadHook-cached bytes
+    # v1.5 bumped wire protocol 1 -> 2 (HotSwap RPCs).
+    # v1.6 bumps 2 -> 3. New JSON-RPC methods:
+    #   agent.heap_count_instances       — JVMTI IterateOverInstancesOfClass (count)
+    #   agent.heap_iterate_by_class      — same iteration with bounded materialization
+    #   agent.heap_find_referrers        — FollowReferences (reverse), 1-hop
+    #   agent.heap_find_referrer_chain   — FollowReferences (reverse), depth-bounded
+    #   agent.method_trace_start/read/stop/list — MethodEntry/MethodExit ring buffers
+    #   agent.alloc_trace_start/read/stop/list  — VMObjectAlloc ring buffers
+    #   agent.stop_all_traces            — clean shutdown on detach
     # Old agent + new server: agent rejects hello with agent_version_mismatch.
     # New agent + old server: server's PROTOCOL_VERSION constant gates the handshake.
-    set(AGENT_PROTOCOL_VERSION_INT 2)
+    set(AGENT_PROTOCOL_VERSION_INT 3)
 endif()
 
 add_library(amdb_agent SHARED src/agent.cpp)

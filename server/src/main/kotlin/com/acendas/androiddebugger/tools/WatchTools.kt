@@ -14,6 +14,7 @@ import io.modelcontextprotocol.kotlin.sdk.types.ToolAnnotations
 import io.modelcontextprotocol.kotlin.sdk.types.ToolSchema
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -144,9 +145,12 @@ object WatchTools {
     private fun registerCountInstances(server: Server) {
         server.addTool(
             name = "count_instances",
-            description = "Count loaded instances of a class via `vm.instanceCounts`. Useful for leak hunting " +
-                "(\"how many `Bitmap`s are alive right now?\"). Errors `capability_unavailable` if the device's ART " +
-                "reports `canGetInstanceInfo == false`. The class must already be loaded — error `invalid_target` " +
+            description = "Count loaded instances of a class. Auto-routes to JVMTI when the agent is " +
+                "loaded and reports `can_tag_objects` (10–100x faster on big heaps); falls back to " +
+                "JDI's `vm.instanceCounts`. Returns `backend: \"jvmti\"|\"jdi\"` so the caller sees " +
+                "which path ran. Useful for leak hunting (\"how many `Bitmap`s are alive right now?\"). " +
+                "Errors `capability_unavailable` if the device's ART reports `canGetInstanceInfo == false` " +
+                "AND no agent is loaded. The class must already be loaded — error `invalid_target` " +
                 "if it isn't (touch the class in the app first).",
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
@@ -161,14 +165,44 @@ object WatchTools {
         ) { request ->
             runTool {
                 val vm = Session.requireAttached()
-                // Per Story 7.1.1: gate via the central capability check so the error
-                // shape (`code: capability_unavailable, feature: get_instance_info`) is
-                // consistent across the surface.
+                val className = (request.arguments?.get("class") as? JsonPrimitive)?.contentOrNull
+                    ?: throw ToolError(ErrorCode.InvalidTarget, "Missing `class`.")
+
+                // v1.6 JVMTI auto-route: when the agent is loaded and capable, prefer it.
+                // Walks the whole heap once and tag-counts — 10-100x faster than JDI's
+                // `instanceCounts` on big heaps (per spec §6).
+                val agentClient = Session.agentClient
+                val caps = Session.agentState?.capabilities
+                val canTagObjects = (caps?.get("can_tag_objects") as? JsonPrimitive)?.booleanOrNull == true
+                if (agentClient != null && canTagObjects) {
+                    val sig = toJvmSignature(className)
+                    val result = try {
+                        com.acendas.androiddebugger.inspection.VmCoordinator.withExclusiveAccess(
+                            operation = "heap_walk",
+                            timeoutMs = 30_000L,
+                        ) {
+                            com.acendas.androiddebugger.jvmti.AgentHeap.countInstances(agentClient, sig)
+                        }
+                    } catch (te: ToolError) {
+                        // Re-throw all errors verbatim; the wrapper already maps
+                        // `class_not_loaded` → InvalidTarget which matches what the
+                        // JDI path emits below.
+                        throw te
+                    }
+                    return@runTool toolOk {
+                        put("class", className)
+                        put("count", result.count)
+                        put("sample_size_bytes", result.sampleSizeBytes)
+                        put("backend", "jvmti")
+                    }
+                }
+
+                // JDI fallback. Per Story 7.1.1: gate via the central capability check
+                // so the error shape (`code: capability_unavailable, feature:
+                // get_instance_info`) is consistent across the surface.
                 com.acendas.androiddebugger.Capability.requireCapability(
                     com.acendas.androiddebugger.Capability.GET_INSTANCE_INFO,
                 )
-                val className = (request.arguments?.get("class") as? JsonPrimitive)?.contentOrNull
-                    ?: throw ToolError(ErrorCode.InvalidTarget, "Missing `class`.")
                 val refTypes: List<ReferenceType> = vm.classesByName(className)
                 if (refTypes.isEmpty()) {
                     throw ToolError(
@@ -183,6 +217,7 @@ object WatchTools {
                 toolOk {
                     put("class", className)
                     put("count", total)
+                    put("backend", "jdi")
                     if (refTypes.size > 1) {
                         // Multiple classloaders define the same name — surface the breakdown.
                         put("by_classloader", buildJsonArray {
@@ -199,18 +234,26 @@ object WatchTools {
         }
     }
 
+    /** Convert FQN `com.example.Foo` to JVM signature `Lcom/example/Foo;`. */
+    private fun toJvmSignature(fqn: String): String =
+        "L" + fqn.replace('.', '/') + ";"
+
     private fun registerFindReferrers(server: Server) {
         server.addTool(
             name = "find_referrers",
-            description = "Find incoming references to an object via `ObjectReference.referringObjects`. " +
-                "Useful for tracking down stale references holding a leaked object alive. " +
-                "Returns `[{ class, ref_id, field? }]`. `field` is best-effort — we scan the referrer's instance " +
-                "fields for a matching value. `max` is capped at 100; `max=0` is rejected (foot-gun on a phone heap).",
+            description = "Find incoming references to an object. Routes by ref prefix: `vobj#N` MUST " +
+                "go through the JVMTI agent (refuses with `agent_not_loaded` otherwise); `obj#N` uses " +
+                "JDI `ObjectReference.referringObjects`. Returns `[{ class|type, ref|ref_id, ... }]`. " +
+                "On the JDI path each entry carries `field` / `static_field` (best-effort scan); on " +
+                "the JVMTI path each entry carries `edge` (field / static_field / array_element / " +
+                "jni_global / ...) and `edge_detail` (field name, array index, ...). " +
+                "Response includes `backend: \"jvmti\"|\"jdi\"` plus `consistency: \"strong\"|\"n/a\"` " +
+                "for diagnostics. `max` capped at 100; `max=0` is rejected (foot-gun on a phone heap).",
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
                     putJsonObject("ref") {
                         put("type", "string")
-                        put("description", "Object ref id (e.g. `obj#12345`) from a previous tool call.")
+                        put("description", "Object ref id. `obj#12345` from JDI tools, or `vobj#N` from JVMTI heap tools.")
                     }
                     putJsonObject("max") {
                         put("type", "integer")
@@ -223,12 +266,6 @@ object WatchTools {
         ) { request ->
             runTool {
                 Session.requireAttached()
-                // Per Story 7.1.1: `referringObjects` is gated by `canGetInstanceInfo`
-                // on JDI/ART. Gate before any work to give the agent a clean
-                // capability_unavailable instead of an opaque UnsupportedOperationException.
-                com.acendas.androiddebugger.Capability.requireCapability(
-                    com.acendas.androiddebugger.Capability.GET_INSTANCE_INFO,
-                )
                 val refId = (request.arguments?.get("ref") as? JsonPrimitive)?.contentOrNull
                     ?: throw ToolError(ErrorCode.InvalidTarget, "Missing `ref`.")
                 val rawMax = (request.arguments?.get("max") as? JsonPrimitive)?.intOrNull
@@ -237,6 +274,51 @@ object WatchTools {
                     rawMax <= 0 -> FIND_REFERRERS_DEFAULT
                     else -> rawMax.coerceAtMost(FIND_REFERRERS_HARD_CAP)
                 }
+
+                // Route by ref prefix. `vobj#N` is owned by the JVMTI agent (opaque heap
+                // objects ART tags); `obj#N` is JDI's ObjectReference. The two id spaces
+                // don't overlap and a JDI ref isn't resolvable through JVMTI (and vice
+                // versa), so the prefix is authoritative.
+                if (refId.startsWith("vobj#")) {
+                    val agentClient = Session.agentClient
+                        ?: throw ToolError(
+                            errorCode = ErrorCode.CapabilityUnavailable,
+                            message = "agent_not_loaded: `vobj#` refs require the JVMTI agent, but no agent is loaded.",
+                            hint = "Re-run /android-debugger:attach without `load_agent: false`.",
+                        )
+                    val result = com.acendas.androiddebugger.inspection.VmCoordinator.withExclusiveAccess(
+                        operation = "heap_walk",
+                        timeoutMs = 30_000L,
+                    ) {
+                        com.acendas.androiddebugger.jvmti.AgentHeap.findReferrers(agentClient, refId, max)
+                    }
+                    return@runTool toolOk {
+                        put("referrers", buildJsonArray {
+                            for (r in result.referrers) {
+                                add(buildJsonObject {
+                                    put("type", r.type)
+                                    put("ref", r.ref)
+                                    r.edge?.let { put("edge", it) }
+                                    r.edgeDetail?.let { put("edge_detail", it) }
+                                })
+                            }
+                        })
+                        put("count", result.referrers.size)
+                        put("total", result.total)
+                        put("truncated", result.truncated)
+                        put("capped_at", max)
+                        put("backend", "jvmti")
+                        put("consistency", "strong")
+                    }
+                }
+
+                // JDI path. Per Story 7.1.1: `referringObjects` is gated by
+                // `canGetInstanceInfo` on JDI/ART. Gate before any work to give the
+                // agent a clean capability_unavailable instead of an opaque
+                // UnsupportedOperationException.
+                com.acendas.androiddebugger.Capability.requireCapability(
+                    com.acendas.androiddebugger.Capability.GET_INSTANCE_INFO,
+                )
                 val obj = ObjectIdMint.resolveObject(refId)
                     ?: throw ToolError(
                         errorCode = ErrorCode.InvalidTarget,
@@ -260,6 +342,8 @@ object WatchTools {
                     })
                     put("count", referrers.size)
                     put("capped_at", max)
+                    put("backend", "jdi")
+                    put("consistency", "n/a")
                 }
             }
         }

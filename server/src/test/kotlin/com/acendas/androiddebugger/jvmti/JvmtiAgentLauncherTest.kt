@@ -225,8 +225,8 @@ class JvmtiAgentLauncherTest {
         val argString = captured.last()
         assertTrue("package=com.x.app" in argString, "expected package= in: $argString")
         assertTrue("verbose=1" in argString, "expected verbose=1 in: $argString")
-        // v1.5 bumps the wire protocol 1 → 2 (adds HotSwap RPCs).
-        assertTrue("version=2" in argString, "expected version=2 in: $argString")
+        // v1.6 bumps the wire protocol 2 → 3 (adds heap walks + tracing RPCs).
+        assertTrue("version=3" in argString, "expected version=3 in: $argString")
         assertTrue(argString.startsWith("/data/local/tmp/libamdb_agent.so="), "expected agentPath= prefix in: $argString")
     }
 
