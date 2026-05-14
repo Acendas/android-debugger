@@ -1,6 +1,6 @@
 ---
-name: Detach android-debugger
-description: This skill should be used when the user asks to "detach", "stop debugging android", "disconnect debugger", "end debug session", "close the debugger", "kill the debugger", "stop", "I'm done", "exit debug", "bye debugger", "release the app", "wrap up the debug session", or runs `/android-debugger:detach`. Releases the adb forward, disposes the JDI VirtualMachine, removes all event requests, returns the app to a fully running state.
+name: detach
+description: Detach the Android debugger and release the app.
 allowed-tools: mcp__android-debugger__detach, mcp__android-debugger__connection_status
 ---
 

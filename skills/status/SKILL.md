@@ -1,6 +1,6 @@
 ---
-name: android-debugger status
-description: This skill should be used when the user asks "what's the debugger status", "is android-debugger connected", "show debug session", "am I attached", "list active breakpoints", or runs `/android-debugger:status`. Reports the current debug session — server reachability, attached process, paused/running state, breakpoint and watch counts. Cheap read-only summary; never blocks on a paused VM. For "why did we stop here" / "what's happening at this pause", route to `/android-debugger:explain` instead — that's the post-pause hypothesis tool.
+name: status
+description: Show current Android debugger session state.
 allowed-tools: mcp__android-debugger__connection_status, mcp__android-debugger__list_threads, mcp__android-debugger__render_capabilities
 ---
 

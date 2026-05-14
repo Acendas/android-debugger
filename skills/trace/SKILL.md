@@ -1,6 +1,6 @@
 ---
-name: Trace via logpoint sweep
-description: This skill should be used when the user asks "find where X happens", "trace this code path", "log when Y is called", "instrument suspect code", "where does this value get set", or runs `/android-debugger:trace`. Cursor-style logpoint sweep — identifies a suspect call graph from the user's project, places 5–10 non-suspending logpoints (no app pause), prompts the user to reproduce, then harvests the timeline from logcat. Replaces `Log.d` archaeology.
+name: trace
+description: Trace an Android code path via logpoint sweep.
 argument-hint: "<symptom or call site to trace>"
 allowed-tools: Read, Grep, Glob, mcp__android-debugger__connection_status, mcp__android-debugger__add_line_breakpoint, mcp__android-debugger__list_breakpoints, mcp__android-debugger__remove_breakpoint, mcp__android-debugger__tail_logcat, mcp__android-debugger__read_logcat, mcp__android-debugger__stop_logcat
 ---

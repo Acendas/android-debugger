@@ -1,6 +1,6 @@
 ---
-name: List HotSwap'd classes
-description: Show every class HotSwap'd in the current debug session with its snapshot age.
+name: patch-status
+description: List classes hot-swapped in the current session.
 allowed-tools: mcp__android-debugger__connection_status, mcp__android-debugger__agent_info
 ---
 

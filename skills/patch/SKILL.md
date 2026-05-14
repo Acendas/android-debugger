@@ -1,6 +1,6 @@
 ---
-name: Patch Android code via HotSwap
-description: Edit a method body, recompile, hot-swap into the running app, and verify against a caller-supplied success criterion — no app restart.
+name: patch
+description: Hot-swap a method body into the running Android app.
 argument-hint: "<goal> verify_via: <success criterion>"
 allowed-tools: AskUserQuestion, Bash, Read, Edit, Glob, Grep, mcp__android-debugger__connection_status, mcp__android-debugger__agent_info, mcp__android-debugger__hot_swap_class, mcp__android-debugger__hot_swap_classes, mcp__android-debugger__hot_swap_revert, mcp__android-debugger__list_threads, mcp__android-debugger__frame_snapshot, mcp__android-debugger__wait_for_event, mcp__android-debugger__dump_view_hierarchy, mcp__android-debugger__get_current_activity
 ---

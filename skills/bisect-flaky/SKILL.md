@@ -1,6 +1,6 @@
 ---
-name: Bisect a flaky test
-description: This skill should be used when the user asks "this test fails 1 in 10 times", "bisect this flaky test", "narrow down a flaky failure", "why does this test sometimes fail", "find the trigger for the flake", "this test is busted half the time", "sometimes the test fails on CI but works locally", "test is being weird", "TestX flaked again", "intermittent CI failure on TestY", "passes locally fails on CI", or runs `/android-debugger:bisect-flaky`. Loops a flaky instrumented test until both pass and fail are observed, captures state at the divergence point with conditional breakpoints, narrows down the trigger, proposes a hypothesis.
+name: bisect-flaky
+description: Bisect a flaky Android instrumentation test.
 argument-hint: "<test class.method>"
 allowed-tools: Read, Grep, mcp__android-debugger__connection_status, mcp__android-debugger__attach, mcp__android-debugger__detach, mcp__android-debugger__add_exception_breakpoint, mcp__android-debugger__add_line_breakpoint, mcp__android-debugger__list_breakpoints, mcp__android-debugger__remove_breakpoint, mcp__android-debugger__wait_for_event, mcp__android-debugger__frame_snapshot, mcp__android-debugger__evaluate, mcp__android-debugger__resume, mcp__android-debugger__tail_logcat, mcp__android-debugger__read_logcat
 ---

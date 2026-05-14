@@ -1,6 +1,66 @@
 ---
 name: android-debug-orchestrator
-description: Use this agent for autonomous, multi-step Android debugging. Receives a goal (crash, unexpected behavior, flaky test, code walkthrough), runs the iterative attach → set-breakpoints → prompt-reproduce → snapshot → analyze → step loop, returns a structured findings report. Trigger phrases like "debug this Android bug autonomously", "investigate why my app does X end-to-end", "run a full debug session for me", "find the cause of this Android crash and report back", "auto-debug this", "drive the debugger yourself". Spawned by the user's main session via the Agent tool when the user wants the loop run for them rather than collaboratively. Requires the android-debugger MCP server already wired (see /android-debugger:setup).
+description: |
+  Use this agent for autonomous, multi-step Android debugging against a Java/Kotlin app on a connected device or emulator. Receives a goal (crash, unexpected behavior, flaky test, code walkthrough), drives the iterative attach → set-breakpoints → prompt-reproduce → snapshot → analyze → step loop end-to-end, and returns a structured findings report. The android-debugger MCP server (JDI/JDWP + JVMTI agent, hot-swap, heap walks, logcat, tracing) is the underlying surface.
+
+  Spawn this agent — don't try to drive the debugger from the main session — whenever the user surfaces any signal of an Android-app problem and isn't asking for collaborative single-step debugging. Trigger on natural-language signals like:
+
+  - "my android app crashes" / "the app force-closes when I tap X"
+  - "I'm waiting for debugger" / "process is paused for jdwp" / "stuck on the debug-wait splash"
+  - "why does this throw NullPointerException" / "find the source of this IllegalStateException" / "trace this Android exception"
+  - "the app hangs" / "ANR on main thread" / "stuck dialog" / "the screen freezes"
+  - "this test fails 1 in 10 times" / "flaky instrumentation test" / "passes locally fails on CI" (when the codebase is Android)
+  - "logcat shows error E but I don't know where" / "I see this exception in logcat" / "tag X is logging weirdly"
+  - "walk me through what happens when the user taps Y" / "show me how this Activity boots" / "onboard me to this Android code"
+  - "find where Z gets set" / "trace what calls W" / "log every time this method runs"
+  - "hot-swap this Kotlin method into the running app" / "patch this without reinstall"
+  - generic Android-flavored asks like "debug this", "investigate why X happens", "find the cause" — when the project is clearly Android.
+
+  Preconditions: the android-debugger plugin's MCP server must be running. If `mcp__android-debugger__server_info` is unreachable, route the user to `/android-debugger:setup` first. If no process is attached, the agent attaches at the start of its loop.
+
+  Examples:
+
+  <example>
+  Context: Android crash with a stack trace pasted in.
+  user: "App crashes with NullPointerException in com.example.MainActivity.onLoginClick when I tap login"
+  assistant: "Dispatching android-debug-orchestrator to attach, catch the NPE, and root-cause."
+  <commentary>Crash + repro path → crash loop. Agent sets an uncaught-exception breakpoint, prompts repro, snapshots the trigger frame, returns root-cause + load-bearing local.</commentary>
+  </example>
+
+  <example>
+  Context: Hung-on-debug-wait splash.
+  user: "my app is stuck on the 'Waiting For Debugger' dialog"
+  assistant: "Dispatching android-debug-orchestrator — it will pick up the JDWP-waiting process and attach."
+  <commentary>The agent runs the preflight (`list_debuggable_processes`), attaches to the suspended process, and the user's splash releases as soon as JDI is connected.</commentary>
+  </example>
+
+  <example>
+  Context: Behavior bug, no exception.
+  user: "login does nothing on slow networks in com.example.app"
+  assistant: "Using android-debug-orchestrator to investigate the silent-failure path."
+  <commentary>Behavior shape → logpoint sweep across the login call graph or line-bp on the click handler. Agent reads the user's project to find the entry point.</commentary>
+  </example>
+
+  <example>
+  Context: Flaky instrumentation test on Android.
+  user: "TestSignInFlow.testRetryOnTimeout fails 1 in 10 runs"
+  assistant: "Dispatching android-debug-orchestrator to bisect the flake."
+  <commentary>Flaky shape → loop the test in debug-wait mode, capture state at the divergence point with a conditional breakpoint, propose a hypothesis.</commentary>
+  </example>
+
+  <example>
+  Context: User wants to understand existing Android code.
+  user: "walk me through what happens when the user opens the Settings screen, app is com.example.app"
+  assistant: "Using android-debug-orchestrator in walkthrough mode."
+  <commentary>Onboarding shape → entry breakpoint, narrated step-loop with bounded budget.</commentary>
+  </example>
+
+  <example>
+  Context: Pure code question, no running app involved.
+  user: "what does this Kotlin lambda compile down to?"
+  assistant: "That's a static-analysis question — I can answer directly without the debugger."
+  <commentary>No live-app signal. Don't spawn the agent.</commentary>
+  </example>
 model: sonnet
 ---
 

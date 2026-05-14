@@ -1,6 +1,6 @@
 ---
-name: Attach to Android process
-description: This skill should be used when the user asks to "attach android debugger", "debug this android app", "attach to my app", "start debugging android", "connect to running app", "I'm waiting for debugger", "process is paused for jdwp", "claude can't see my app", "debugger waiting", "app is hanging on Waiting For Debugger", "the app froze on a debug-wait splash", or runs `/android-debugger:attach`. Lists debuggable processes on the connected device/emulator and attaches to one — `adb forward tcp:LOCAL jdwp:PID` then JDI attaches via SocketAttachingConnector. Holds the live VirtualMachine for the rest of the session until `/android-debugger:detach`.
+name: attach
+description: Attach the Android debugger to a running process.
 argument-hint: "[package | pid | partial-package]"
 allowed-tools: AskUserQuestion, mcp__android-debugger__list_devices, mcp__android-debugger__list_debuggable_processes, mcp__android-debugger__attach, mcp__android-debugger__connection_status, mcp__android-debugger__wait_for_event, mcp__android-debugger__render_capabilities
 ---

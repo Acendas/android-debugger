@@ -1,6 +1,6 @@
 ---
-name: Revert a HotSwap
-description: Restore a previously HotSwap'd class to its pre-attach original bytes, or revert every class swapped this session.
+name: patch-revert
+description: Revert a previously hot-swapped Android class.
 argument-hint: "[FQN]"
 allowed-tools: AskUserQuestion, mcp__android-debugger__connection_status, mcp__android-debugger__hot_swap_revert
 ---
