@@ -131,13 +131,13 @@ The marketplace pins to a released version tag — every install is deterministi
 ## Quick start
 
 ```
-/android-debugger:setup        # one-time env probe — JDK + adb + ART capabilities
-/android-debugger:attach       # pick a debuggable PID and connect
-/android-debugger:explain      # snapshot + 1-paragraph hypothesis after a pause
-/android-debugger:catch <Exc>  # break on uncaught exception, root-cause on hit
-/android-debugger:trace <sym>  # logpoint sweep across suspect call graph
-/android-debugger:patch <goal> # HotSwap loop with verify_via
-/android-debugger:detach       # clean shutdown
+/android-debugger:ad-setup        # one-time env probe — JDK + adb + ART capabilities
+/android-debugger:ad-attach       # pick a debuggable PID and connect
+/android-debugger:ad-explain      # snapshot + 1-paragraph hypothesis after a pause
+/android-debugger:ad-catch <Exc>  # break on uncaught exception, root-cause on hit
+/android-debugger:ad-trace <sym>  # logpoint sweep across suspect call graph
+/android-debugger:ad-patch <goal> # HotSwap loop with verify_via
+/android-debugger:ad-detach       # clean shutdown
 ```
 
 For "I'm stuck, please debug this for me," dispatch the orchestrator:
@@ -169,7 +169,7 @@ Skills are short, composable recipes. Most debug sessions chain a handful.
 ### 1. Attach
 
 ```
-/android-debugger:attach
+/android-debugger:ad-attach
 ```
 
 Lists debuggable PIDs, picks one (or accepts a `serial:` + `package:`), forwards a free local port to the app's JDWP port, attaches the JDI `VirtualMachine`, probes ART capabilities, optionally loads the JVMTI agent. Returns the capability map + any warnings (release-build detected, prior-session crash, etc.).
@@ -177,7 +177,7 @@ Lists debuggable PIDs, picks one (or accepts a `serial:` + `package:`), forwards
 ### 2. Explain why we stopped
 
 ```
-/android-debugger:explain
+/android-debugger:ad-explain
 ```
 
 The cheap, high-leverage default after every pause. Calls `frame_snapshot`, reads top N frames + locals + watches, writes a one-paragraph hypothesis. The agent decides what to do next from that hypothesis — not from guessing.
@@ -185,7 +185,7 @@ The cheap, high-leverage default after every pause. Calls `frame_snapshot`, read
 ### 3. Catch the exception
 
 ```
-/android-debugger:catch java.lang.NullPointerException
+/android-debugger:ad-catch java.lang.NullPointerException
 ```
 
 Sets an uncaught-exception breakpoint, resumes, reproduces, root-causes from the paused frame. Bread-and-butter workflow for "why does X crash."
@@ -193,7 +193,7 @@ Sets an uncaught-exception breakpoint, resumes, reproduces, root-causes from the
 ### 4. Trace without rebuilding
 
 ```
-/android-debugger:trace "login fails sometimes"
+/android-debugger:ad-trace "login fails sometimes"
 ```
 
 Cursor-style logpoint sweep — drops 6–8 non-suspending logpoints across a suspect call graph, runs the failing path, harvests the timeline. **Replaces `Log.d` archaeology entirely.** No rebuild, no Gradle, no APK push.
@@ -201,7 +201,7 @@ Cursor-style logpoint sweep — drops 6–8 non-suspending logpoints across a su
 ### 5. Walk through unfamiliar code
 
 ```
-/android-debugger:walk MainActivity.onCreate
+/android-debugger:ad-walk MainActivity.onCreate
 ```
 
 Sets an entry breakpoint, steps with a bounded step budget, narrates at frame boundaries. Onboarding workflow for "show me how login works."
@@ -209,7 +209,7 @@ Sets an entry breakpoint, steps with a bounded step budget, narrates at frame bo
 ### 6. Patch and verify
 
 ```
-/android-debugger:patch "fix the off-by-one in the pagination"
+/android-debugger:ad-patch "fix the off-by-one in the pagination"
 ```
 
 Goal-driven HotSwap loop. Required `verify_via:` clause — the patch isn't done until the verify probe passes against the live VM. Pre-validates the shape diff (no field add/remove, no superclass change), dexes via embedded d8, sends to the JVMTI agent for `RedefineClasses`. Revertible.
@@ -217,7 +217,7 @@ Goal-driven HotSwap loop. Required `verify_via:` clause — the patch isn't done
 ### 7. Detach cleanly
 
 ```
-/android-debugger:detach
+/android-debugger:ad-detach
 ```
 
 Disposes the JDI VM, releases the adb forward, drains JVMTI ref tables, persists breakpoints + watches to `$CLAUDE_PLUGIN_DATA/android-debugger/sessions/<serial>_<package>.json` for next attach.
@@ -451,7 +451,7 @@ The fat jar and agent `.so` files are committed to the repo so users don't need 
 
 **`code: attach_failed`** — app isn't built debuggable, or Android Studio's debugger is already attached. Detach the IDE first.
 
-**`code: already_attached`** — one VM per session. `/android-debugger:detach` first.
+**`code: already_attached`** — one VM per session. `/android-debugger:ad-detach` first.
 
 **`code: agent_conflict`** (v1.4+) — Android Studio's Apply-Changes agent is in the process. Detach Studio.
 

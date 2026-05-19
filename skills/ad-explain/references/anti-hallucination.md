@@ -1,0 +1,89 @@
+# Anti-hallucination + evaluate-safety rules
+
+Canonical owner. Read this from `/android-debugger:ad-explain`, `/android-debugger:ad-catch`, `/android-debugger:ad-trace`, `/android-debugger:ad-walk`, `/android-debugger:ad-bisect-flaky`, and the orchestrator agent. The rules apply whenever Claude is reading a JDI `frame_snapshot` or invoking `evaluate` / `eval_method` against a live VM.
+
+The risk these rules guard against is two-sided: (a) the user can't see the snapshot Claude is reading, so any invented value sticks; (b) `eval_method` runs arbitrary code in the target VM with whatever permissions the app has. Both error modes are silent — Claude sounds confident either way. The rules below close the gaps.
+
+## v1.3 tool split
+
+- **`evaluate`** is pure DMN-FEEL (kfeel-backed). Identifiers, property access, arithmetic, comparison, boolean logic, `if/then/else`, `instance of`, comprehensions, ranges. **No method calls.** `evaluate` is side-effect-refusing by grammar — it cannot mutate state. Use freely.
+- **`eval_method`** invokes a JDI method on an object/class. **Method calls happen here.** Mutation refusal applies: methods matching mutator patterns return `code: vm_mutation_refused`. Override with `allow_mutation: true` only after explicit user consent.
+
+The rules below mostly concern `eval_method`. `evaluate` cannot violate them because its grammar can't express a method call.
+
+## Anti-hallucination (snapshot-grounding) rules
+
+- **Never narrate state that isn't in the snapshot.** If `frame_snapshot.locals_unavailable: true` (R8/ProGuard release build), say so explicitly and recommend the user rebuild a debug variant or name a specific identifier for `evaluate` to fetch.
+- **Never answer "what's the value of `x`?" from memory.** If the snapshot doesn't surface the value, call `evaluate("x")` to fetch it (cheap, side-effect-free) or `eval_method` if a method call is needed.
+- **Never claim a divergent local without two captured snapshots.** Quote the actual values (`pass-1: counter=10` vs. `fail-3: counter=11`) — never paraphrase them as "different".
+- **Never propose a fix from memory of similar bugs.** Ground every claim in what the snapshot shows. If the snapshot doesn't support the claim, say "I don't have enough evidence" and propose what to inspect next.
+
+## Evaluate-safety (mutation refusal) rules — applies to `eval_method`
+
+`eval_method` runs the target method in the VM. Method calls, even ones the user typed, can mutate state. **Server-side enforcement (v1.2.0+):** `eval_method` refuses calls matching mutator-method patterns and returns `code: vm_mutation_refused, current_state: <class>.<method>`. To override (when the user has explicitly authorized the mutation), pass `allow_mutation: true`. The rules below describe the agent-side discipline; the server is belt-and-suspenders.
+
+The agent is still the first line — refuse to invoke any method that *looks* like it mutates, escalate to the user if uncertain. Don't reflexively retry with `allow_mutation: true` on a refusal — that defeats the safeguard. Only set the flag after explicit user consent (e.g., the user said "go ahead and call `clear()`").
+
+### Mutator-method prefix list
+
+Refuse `eval_method` when the method name matches any of these patterns:
+
+- `set*` — setters by Java/Kotlin convention.
+- `*Reset` — Reset on a counter/timer/state machine.
+- `clear`, `clear*` — `Collection.clear`, `StringBuilder.clear`, etc.
+- `delete*` — `delete`, `deleteAll`, `deleteEntry`.
+- `apply` — `SharedPreferences.Editor.apply` (async commit).
+- `commit` — `SharedPreferences.Editor.commit`, transaction commits.
+- `add`, `add*` — `Collection.add`, `addObserver`, etc. (mutates the collection / subscriber list).
+- `remove`, `remove*` — `Collection.remove`, `removeObserver`.
+- `put*` — `Map.put`, `Bundle.putString`.
+- `update*` — `update`, `updateState`, `updateAll`.
+
+Plus these specific invocations:
+
+- `Editor.commit()` / `Editor.apply()` on `SharedPreferences`.
+- `Cursor.close()`, `OutputStream.write()`, `InputStream.read()` (consumes / advances).
+- `Iterator.next()`, `Iterator.remove()` (advances / mutates).
+- Any method whose declaring class is `*Repository`, `*Dao`, `*Database` and whose name doesn't start with `get`/`find`/`query`/`select` — write paths by convention.
+
+### Read-allowed list (collection methods on non-mutating shapes)
+
+These are read-only and safe even though they don't start with `get`:
+
+- `size()`, `isEmpty()`, `contains(...)` on collections.
+- `length()` on `String`, `CharSequence`, arrays.
+- `toString()` is **conditionally allowed** — only if the declaring class is a JDK/Android framework type (`String`, `Integer`, `Date`, `Uri`, `Throwable`, `StringBuilder`). Custom `toString` implementations can be arbitrary code; refuse for user-code types unless the user explicitly asks.
+- `get(i)`, `get(key)` on `List` / `Map` (read by index/key).
+- Property accessors generated by Kotlin (the synthetic `getX` for `val x`).
+
+### Escalation rule (the catch-all)
+
+**Ask the user before invoking any non-getter method on a non-collection value.** "Non-getter" means the name doesn't start with `get`, `is`, `has`, `find`, `query`, `select`, `peek`, `view`, or match the read-allowed list above. False positives like `getCleared()` are allowed because the `get` prefix indicates a read; trust naming conventions but escalate ambiguity to the user.
+
+The agent is best-effort here; the user is the safety net. When in doubt, ask once via `AskUserQuestion` with a clear summary of what `eval_method` would invoke and why.
+
+## Style note
+
+When you refuse, refuse compactly. "I can't `eval_method` `cache.clear` — that would mutate state. If you want to inspect cache contents, I can read `cache.size` via `evaluate('cache.size')` instead." Don't lecture; offer the next-best read-only path.
+
+## FEEL syntax quick reference for `evaluate`
+
+| Want                    | FEEL syntax                                                |
+|-------------------------|------------------------------------------------------------|
+| String literal          | `'hello'` (single quotes, not double)                      |
+| Equality                | `x = y` (single `=`, not `==`)                             |
+| Inequality              | `x != y`                                                   |
+| Boolean logic           | `a and b`, `a or b`, `not a`                               |
+| Ternary                 | `if x > 10 then 'big' else 'small'`                        |
+| Type check              | `name instance of string`                                  |
+| Property access         | `user.address.city` (pre-resolved by FeelContextBuilder)   |
+| List count              | `count(items)`                                             |
+| Sum / min / max         | `sum(items)`, `min(items)`, `max(items)`                   |
+| Range check             | `score in [1..100]`                                        |
+| Quantifier              | `every x in scores satisfies x >= 70`                      |
+| Null-safe propagation   | `x + 1` returns `null` if `x` is null (no exception)       |
+| String length           | `string length(name)`                                      |
+| Upper / lower case      | `upper case(name)`, `lower case(name)`                     |
+| Substring               | `substring(name, 1, 3)`                                    |
+
+For anything not on this list, see kfeel's full grammar at https://github.com/Acendas/kfeel — the `evaluate` tool description also lists the supported categories.
