@@ -1,6 +1,7 @@
 ---
 name: ad-status
 description: Show current Android debugger session state.
+model: haiku
 allowed-tools: mcp__android-debugger__connection_status, mcp__android-debugger__list_threads, mcp__android-debugger__render_capabilities
 ---
 

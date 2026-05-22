@@ -128,6 +128,47 @@ claude plugin install android-debugger@acendas
 
 The marketplace pins to a released version tag — every install is deterministic. To pick up a new release, run `/plugin marketplace update` then `/plugin install android-debugger@acendas` again.
 
+## v1.7: Debug Plans (faster investigations)
+
+Authoring a Debug Plan up front compresses a typical investigation from ~20 LLM round-trips to ~3. Instead of driving the debugger step by step, you submit a plan that declares:
+
+- which breakpoints to install,
+- what to observe at each event (snapshot, FEEL expression),
+- hypotheses to grade (matched / contradicted / inconclusive),
+- when to yield control back to interactive mode.
+
+The server executes the plan deterministically over the JDI event stream; you stream progress via `plan_progress` events and read a structured report at the end. Interactive debugging stays fully available — `frame_snapshot`, `inspect_object`, `evaluate` keep working during a plan.
+
+The recipe-shaped skills (`/ad-catch`, `/ad-trace`, `/ad-walk`, `/ad-bisect-flaky`) author plans; `/ad-investigate` dispatches the right template based on the goal shape. See `docs/android-debugger-dev.md` for the full DSL and architecture notes.
+
+### Quick example
+
+The agent investigating a NullPointerException composes and submits:
+
+```json
+{
+  "name": "catch-npe-login",
+  "timeout_ms": 30000,
+  "max_events": 5,
+  "setup": [
+    { "kind": "exception_bp", "class_pattern": "java.lang.NullPointerException", "caught": true, "uncaught": true }
+  ],
+  "hypotheses": [
+    { "name": "token_null_at_throw", "when": "event.kind = 'exception'", "expect": "frame.locals['token'] = null" }
+  ],
+  "on_event": [
+    { "match": "event.kind = 'exception'", "actions": [
+        { "kind": "snapshot", "depth": 8 },
+        { "kind": "feel", "feel": "frame.locals['token']", "as": "token_value" },
+        { "kind": "resume" }
+    ]}
+  ],
+  "harvest": ["snapshots", "feel_outputs", "hypotheses"]
+}
+```
+
+The server returns the `plan_id`, captures the throwing frame, grades the hypothesis, and produces a structured report. If the hypothesis is contradicted, the orchestrator aborts the plan (resuming the VM), re-authors with high effort, and re-dispatches — never holding the app frozen while it thinks.
+
 ## Quick start
 
 ```

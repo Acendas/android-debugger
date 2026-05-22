@@ -1,57 +1,81 @@
 ---
 name: ad-walk
-description: Walk through Android code with a step budget.
-argument-hint: "<entry point — file:line or class.method> [--budget=N]"
-allowed-tools: Read, Grep, mcp__android-debugger__connection_status, mcp__android-debugger__add_line_breakpoint, mcp__android-debugger__remove_breakpoint, mcp__android-debugger__wait_for_event, mcp__android-debugger__frame_snapshot, mcp__android-debugger__step_into, mcp__android-debugger__step_over, mcp__android-debugger__step_out, mcp__android-debugger__step_until_method_change, mcp__android-debugger__resume
+description: Walk Android code with bounded step budget via plan.
+model: opus
 ---
 
-# Walk — guided narrated walkthrough
+# Walk — author a Debug Plan that narrates an entry point with a step budget
 
-Onboarding mode. The user wants to understand what the code *does*, not fix a bug. Set one breakpoint at the entry, trigger it, then step through with a bounded budget, explaining each new method in plain English.
+Onboarding mode. The user wants to understand what the code *does*, not fix a bug. Author a Debug Plan whose setup installs an entry breakpoint, whose `on_event` snapshots each frame boundary and steps into the next call, and whose `until` clause stops when the walk leaves the original method or hits the step budget.
 
-## What you do
+## When to use
 
-1. Call `mcp__android-debugger__connection_status`. Must be attached.
+The user said "walk me through X", "show me how Y works", "onboard me to this codepath" — they have an entry point (file:line, class.method, or a flow description) and want a narrated step trace.
 
-2. **Resolve the entry point.** Argument shapes:
-   - `file.kt:42` → use directly with `add_line_breakpoint`.
-   - `MyClass.someMethod` → Read/Grep the project to find the method's file:line. If multiple matches, ask via `AskUserQuestion`.
-   - `"login flow"` etc. → Grep for likely entry keywords (`onClick`, `onCreate`, `LaunchedEffect`, etc.) in the suspect class hierarchy. Confirm with one `AskUserQuestion`.
+## Preflight
 
-3. Place the entry breakpoint via `mcp__android-debugger__add_line_breakpoint`. Save the breakpoint id.
+1. Call `connection_status`. Must be attached.
+2. **Resolve the entry point.**
+   - `file.kt:42` → use as-is with a `line_bp` setup entry.
+   - `MyClass.someMethod` → use a `method_entry_bp` setup entry. If multiple overloads, ask via `AskUserQuestion`.
+   - `"login flow"` → Read/Grep for likely entry keywords (`onClick`, `onCreate`, `LaunchedEffect`). Confirm with one `AskUserQuestion`.
+3. Decide the step budget. Default `50` events (each event is one frame boundary). User may override via `--budget=N` in the argument suffix.
 
-4. **Tell the user to trigger** the entry: "Tap the login button now (or however you reach this code path). I'll wait."
+## Compose the plan
 
-5. Call `mcp__android-debugger__wait_for_event` with `{ timeout_ms: 60000, types: ["stopped"] }`. On hit, remove the entry breakpoint immediately (`remove_breakpoint`) — we don't want it firing again on every iteration.
+Read `references/plan-template.json`. The template installs a method-entry breakpoint, snapshots on each event, captures the current method name, and steps into the next call. Termination is by `until: dbg.frame_count() < entry_depth` OR `max_events` budget.
 
-6. Call `mcp__android-debugger__frame_snapshot`. Narrate the entry frame in 1–2 sentences: "We're entering `MainActivity.onLoginClick`. The `view` argument is the button itself; no other locals yet."
+Substitute:
 
-7. **Walk loop** (default budget: 30 steps, configurable via the argument suffix `--budget=N`):
-   - Prefer `mcp__android-debugger__step_until_method_change({ max_steps: <budget> })` — the server steps internally until the current method changes (or the budget exhausts), so you get one snapshot per method instead of looping `step_over` and re-checking method names yourself. The tool returns the post-change snapshot plus `steps_taken` and `prior_method`.
-   - Fall back to `step_over` only when you specifically need single-step granularity (e.g., the user asked "step exactly one line"). Use `step_into` when the user explicitly asks "what happens inside that call?" or the next call is *clearly* the interesting one (e.g., `repository.signIn(...)`).
-   - On each `step_until_method_change` return, call `frame_snapshot` and narrate the new method. (Narration *only* on method change is now the server's contract — you don't have to enforce it yourself.)
-   - When the method changes, lead with: "Now in `<class>.<method>` — this <one-sentence purpose>." Then surface the most-interesting locals.
-   - When a frame returns: "`<method>` returned `<value>`. Back in `<caller>`."
-   - **When the next frame is a `Continuation` (suspend-function resumption).** If the snapshot shows `Continuation.resume*` / `BaseContinuationImpl.resumeWith` / `DispatchedContinuationKt` in the next frame, the previous suspend point just resumed — possibly on a different thread/dispatcher. *Don't narrate as a method change* (technically the caller method continues). Instead narrate "resumed from suspend at `<previous call site>`; now on thread `<thread name>`." Read `skills/ad-trace/references/reactive-codepaths.md` for the full reactive-codepath strategy — it's shared with `:trace` and `:bisect-flaky`.
-   - **Generated-proxy carve-out (Hilt/Dagger/Compose factories).** When the next call's class name matches `*_HiltModules*`, `*_Factory`, `*_Provider`, `*_Impl` (Dagger/Hilt synthetic), do `step_into` then immediate `step_out` to skip the synthetic frame and land on the real implementation. Don't narrate the synthetic frame; it's noise the user doesn't want to read. The default class-exclusion filters (see `skills/ad-explain/references/framework-frames.md`) catch the bulk of Compose/AndroidX framework code, but Hilt-generated factories live in the user's package and slip through.
-   - **Stop conditions:**
-     - Budget exhausted (the server returns `step_budget_exhausted: true` after 50 same-method steps — surface this; or the user-supplied `--budget=N` was reached).
-     - User says stop.
-     - We left the original logical scope (returned out of all frames the user was tracing). Suggest next: resume, set another bp, or end the walk.
+- `<<PLAN_NAME>>` → e.g. `walk-login-onclick`.
+- `<<METHOD_CLASS>>` + `<<METHOD_NAME>>` → entry point. Replace the `method_entry_bp` setup entry with a `line_bp` if the user gave file:line.
+- `<<MAX_EVENTS>>` → step budget (default 50).
+- `<<TIMEOUT_MS>>` → wall-clock budget. Default `60000`.
 
-8. **End cleanly.** Suggest `resume` (let the app run free) or `pause` later if they want to inspect another moment.
+Validate before launching:
 
-## Anti-hallucination rules
+```
+validate_plan(plan: <composed plan>)
+```
 
-Read `skills/ad-explain/references/anti-hallucination.md` and follow the snapshot-grounding + evaluate-safety rules there. Apply them to every narration step — never invent a local value, never claim a frame transitioned that didn't, never call a mutating method via `evaluate` to "see what would happen". The user is here to learn what the code does; making up behavior would teach them wrong.
+## Launch + monitor
+
+```
+run_debug_plan(plan: <validated plan>)
+```
+
+Tell the user: "Walk armed. Trigger the entry now — tap the button (or however you reach this code path)." Capture the `plan_id`.
+
+Then loop:
+
+```
+wait_for_event(timeout_ms: 60000, types: ["plan_progress"])
+```
+
+Per event subtype:
+
+- `snapshot_captured` — read the snapshot ref. Narrate the current frame in 1–2 sentences using values from `feel_outputs` (`current_method`, top locals): "Now in `<class>.<method>` — this <one-sentence purpose>." Surface the most-interesting locals.
+- `event_handled` — recurring step boundary. Continue narrating from the snapshot.
+- `completed` — terminal. The walk ended cleanly (left the original scope or budget exhausted). Read `snapshot_refs[]` and `feel_outputs` to produce the final narration arc. Suggest next: resume, set another bp, or end.
+- `yielded` — VM paused at an interesting boundary (e.g., user-injected `yield_when`). For walk plans this is rare; if it happens, `abort_plan` and summarize.
+- `aborted` / `timeout` — read the partial report. Surface as much narrative as captured.
+
+## After terminal
+
+Use `snapshot_refs[]` for deeper drill-down — `inspect_object(snap#<plan_id>:<seq>, vobj#<id>)` resolves objects at any captured frame boundary, even after the plan finished.
+
+**Reactive boundaries.** If the snapshot shows `Continuation.resume*` / `BaseContinuationImpl.resumeWith` in a frame, narrate as "resumed from suspend at `<previous call site>`; now on thread `<thread name>`" — see `skills/ad-trace/references/reactive-codepaths.md` for the shared reactive-codepath strategy.
+
+## When to drop to interactive
+
+Drop to interactive when the user pivots from "walk" to "debug this exact value" mid-trace. Call `abort_plan` first to release the VM, then either re-author as `:catch` or `:trace`, or do single-step drill-down with imperative tools.
+
+## Anti-hallucination
+
+Read `skills/ad-explain/references/anti-hallucination.md`. Every narration line must ground in `feel_outputs` or `snapshot_refs` from the report. Never invent a local value. Never claim a frame transitioned that the snapshot stream didn't record.
 
 ## What you do NOT do
 
 - Do not narrate every line. The user is here to understand the *shape*, not read line-by-line.
-- Do not auto-step-into framework code. The default class-exclusion filter list lives in `skills/ad-explain/references/framework-frames.md` (shared with `:explain`'s collapse rule). Don't override unless the user asks. The C-10 carve-out for generated proxies (`*_HiltModules*` / `*_Factory` / `*_Provider`) is the only exception — those are user-package classes that *should* be stepped through with step-into-then-out.
-- Do not invent state. Lean on `frame_snapshot` for every claim.
-- Do not call `frame_snapshot` if the method didn't change (cache returns the same payload, but don't waste the call).
-
-## Cross-platform discipline
-
-All MCP-mediated. Skill is fully portable.
+- Do not raise `max_events` beyond what the user asked — step-into loops are the top failure mode of walk patterns.
+- Do not auto-step into framework classes. Use `step_into` with the standard skip filters list in `skills/ad-explain/references/framework-frames.md`.

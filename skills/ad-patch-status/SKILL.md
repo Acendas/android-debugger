@@ -1,6 +1,7 @@
 ---
 name: ad-patch-status
 description: List classes hot-swapped in the current session.
+model: haiku
 allowed-tools: mcp__android-debugger__connection_status, mcp__android-debugger__agent_info
 ---
 

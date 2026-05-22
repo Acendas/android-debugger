@@ -696,13 +696,15 @@ object ExecutionTools {
             name = "wait_for_event",
             description = "Block until the next debug event arrives or the timeout elapses. Optional " +
                 "`types` filter (subset of [\"stopped\", \"exception\", \"exit\", \"class_prepare\", " +
-                "\"disconnect\"]) — non-matching events are re-queued so they're not lost. Returns " +
-                "either { ok: true, event: { type, ... } } or { ok: true, timed_out: true }.",
+                "\"disconnect\", \"plan_progress\"]) — non-matching events are re-queued so they're not " +
+                "lost. Returns either { ok: true, event: { type, ... } } or { ok: true, timed_out: true }. " +
+                "v1.7.1: timeout_ms is capped at 60000 (1 min) to prevent long polls from holding the " +
+                "session lock; poll in a loop if you need to wait longer.",
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
                     put("timeout_ms", buildJsonObject {
                         put("type", "integer")
-                        put("description", "Max wait in milliseconds. Default 10000; max 600000.")
+                        put("description", "Max wait in milliseconds. Default 10000; clamped to [1, 60000].")
                     })
                     put("types", buildJsonObject {
                         put("type", "array")
@@ -712,27 +714,52 @@ object ExecutionTools {
             ),
             toolAnnotations = ToolAnnotations(readOnlyHint = true, openWorldHint = false),
         ) { request ->
-            runTool {
+            // v1.7.1 (M7 hang mitigation): wallClockMs slightly above the maximum
+            // wait_for_event timeout so runTool's wall-clock doesn't fire before the
+            // event-wait gets a chance to time out cleanly.
+            runTool(
+                allowsDuringPlan = true,
+                toolName = "wait_for_event",
+                wallClockMs = WAIT_FOR_EVENT_MAX_MS + 5_000L,
+            ) {
                 Session.requireAttached()
                 val args = request.arguments
-                val timeout = ((args?.get("timeout_ms") as? JsonPrimitive)?.intOrNull ?: 10_000)
-                    .coerceIn(0, 600_000).toLong()
+                // v1.7.1 (M7): clamp timeout to [1, WAIT_FOR_EVENT_MAX_MS]. Previously
+                // allowed up to 10 minutes, which holds Session.mutex that whole time
+                // (every other tool call queues behind it). 1-minute cap forces customers
+                // to poll in a loop, which is healthier for progress visibility anyway.
+                val rawTimeout = (args?.get("timeout_ms") as? JsonPrimitive)?.intOrNull ?: 10_000
+                val clamped = rawTimeout.coerceIn(1, WAIT_FOR_EVENT_MAX_MS.toInt()).toLong()
                 val types: Set<String>? = (args?.get("types") as? JsonArray)
                     ?.mapNotNull { it.jsonPrimitive.contentOrNull }
                     ?.toSet()
                     ?.takeIf { it.isNotEmpty() }
 
-                val event = awaitEvent(timeout) { e ->
+                val event = awaitEvent(clamped) { e ->
                     types == null || e.type in types
                 }
                 if (event == null) {
-                    toolOk { put("timed_out", true) }
+                    toolOk {
+                        put("timed_out", true)
+                        if (rawTimeout > WAIT_FOR_EVENT_MAX_MS) {
+                            put("timeout_clamped_from_ms", rawTimeout)
+                            put("timeout_clamped_to_ms", clamped)
+                        }
+                    }
                 } else {
                     toolOk { put("event", event.toJson()) }
                 }
             }
         }
     }
+
+    /**
+     * v1.7.1 (M7 hang mitigation): hard ceiling on `wait_for_event` timeout. Long
+     * polls hold [Session.mutex] for the whole wait, queuing every other tool call.
+     * 1 minute is generous for any single event wait — agents that need to wait
+     * longer poll in a loop, which also gives them progress visibility.
+     */
+    private const val WAIT_FOR_EVENT_MAX_MS: Long = 60_000L
 
     /**
      * Read the next event satisfying [predicate], up to [timeoutMs]. Per R-07, this

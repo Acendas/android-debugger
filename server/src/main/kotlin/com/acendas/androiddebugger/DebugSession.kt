@@ -191,6 +191,38 @@ open class DebugSession {
      */
     @Volatile var v16PollScope: kotlinx.coroutines.CoroutineScope? = null
 
+    /**
+     * v1.7 — coroutine scope owning the in-flight Debug Plan executor coroutine. Mirrors
+     * the [v16PollScope] pattern: created when the event loop starts (so the plan can
+     * dispatch into it the moment the agent calls `run_debug_plan`), and cancelled on
+     * [reset] before the agent client / JDI VM tear down. SupervisorJob so a crash in
+     * the plan run-loop doesn't propagate up and cancel other session-scoped coroutines.
+     */
+    @Volatile var planScope: kotlinx.coroutines.CoroutineScope? = null
+
+    /**
+     * v1.7 — id of the currently-executing Debug Plan, or null if no plan is running.
+     * Mirrors [com.acendas.androiddebugger.inspection.VmCoordinator.currentPlanId] but
+     * exposed here for cheap read access from the [runTool] gate without grabbing the
+     * coordinator lock. Set when `run_debug_plan` claims the slot; cleared on plan
+     * completion / abort / pause / yield / timeout / error.
+     */
+    @Volatile var activePlanId: String? = null
+
+    /**
+     * v1.7 — handle on the in-flight plan execution. Owned by [com.acendas.androiddebugger.plans.PlanExecutor];
+     * exposed here so `pause_plan` / `abort_plan` / `detach` can signal the executor.
+     */
+    @Volatile var activePlan: com.acendas.androiddebugger.plans.PlanRunHandle? = null
+
+    /**
+     * v1.7 — per-plan snapshot store. Holds FrameSnapshots captured during plan
+     * execution keyed by (plan_id, event_seq), survives the per-pause vmStateVersion
+     * eviction, cleared on next plan start / detach. Pinned here so `inspect_object`
+     * and follow-up reads can drill into snapshots after the plan terminates.
+     */
+    val planStore: com.acendas.androiddebugger.plans.PlanStore = com.acendas.androiddebugger.plans.PlanStore()
+
     /** Bump after any operation that changed the VM's run/pause state or frame stack. */
     fun bumpVmStateVersion(): Long {
         // Any state change invalidates the snapshot cache. Per Task 2.1.2.3.
@@ -248,6 +280,31 @@ open class DebugSession {
         // they don't see EOF mid-read and surface noisy errors. Best-effort.
         runCatching { v16PollScope?.cancel() }
         v16PollScope = null
+        // v1.7 — cancel the plan executor scope. The active plan handle below is also
+        // aborted; cancelling the scope itself releases any leftover coroutine state
+        // even on the error path where abort() raced past the run-loop.
+        runCatching { planScope?.cancel() }
+        planScope = null
+        // v1.7 — abort any in-flight plan + release the coordinator slot + clear store.
+        // detach mid-plan is "plan aborts" by definition. abort() is suspend so we
+        // bound it with runBlocking + short timeout — losing a partial report is fine
+        // during forced teardown but we don't want detach to hang on a wedged executor.
+        // HACK: re-evaluate when MCP SDK ships suspend-friendly transports. Per R-03.
+        runCatching {
+            val handle = activePlan
+            if (handle != null && !handle.isTerminal) {
+                runBlocking {
+                    kotlinx.coroutines.withTimeoutOrNull(2_000) { handle.abort("session detach") }
+                }
+            }
+        }
+        val priorPlanId = activePlanId
+        if (priorPlanId != null) {
+            runCatching { com.acendas.androiddebugger.inspection.VmCoordinator.releasePlan(priorPlanId) }
+        }
+        activePlanId = null
+        activePlan = null
+        runCatching { planStore.clear() }
         // v1.4 — close the agent IPC socket but DON'T attempt to unload the
         // agent (JVMTI doesn't support unload). The agent stays loaded in the
         // app process until the process dies. Next attach to the same app
@@ -304,6 +361,12 @@ open class DebugSession {
         eventChannel = channel
         eventLoop = loop
         eventLoopJob = loop.start()
+        // v1.7 — stand up the plan executor scope alongside the event loop so
+        // `run_debug_plan` can dispatch without bootstrapping its own scope. Sized
+        // identically to v16PollScope (SupervisorJob + Dispatchers.IO).
+        planScope = kotlinx.coroutines.CoroutineScope(
+            kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO,
+        )
     }
 
     /**

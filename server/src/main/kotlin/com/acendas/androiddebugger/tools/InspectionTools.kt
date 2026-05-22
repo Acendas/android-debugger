@@ -80,7 +80,7 @@ object InspectionTools {
             ),
             toolAnnotations = ToolAnnotations(readOnlyHint = true, openWorldHint = false),
         ) { request ->
-            runTool {
+            runTool(allowsDuringPlan = true, toolName = "exception_summary") {
                 Session.requireAttached()
                 val refId = (request.arguments?.get("ref") as? JsonPrimitive)?.contentOrNull
                     ?: throw ToolError(ErrorCode.InvalidTarget, "Missing `ref`.")
@@ -135,7 +135,7 @@ object InspectionTools {
             inputSchema = ToolSchema(),
             toolAnnotations = ToolAnnotations(readOnlyHint = true, openWorldHint = false),
         ) {
-            runTool {
+            runTool(allowsDuringPlan = true, toolName = "render_capabilities") {
                 val vm = Session.requireAttached()
                 val caps = Session.capabilities ?: return@runTool toolErr(
                     code = ErrorCode.NotAttached,
@@ -244,7 +244,7 @@ object InspectionTools {
             ),
             toolAnnotations = ToolAnnotations(readOnlyHint = true, openWorldHint = false),
         ) { request ->
-            runTool {
+            runTool(allowsDuringPlan = true, toolName = "evaluate") {
                 val vm = Session.requireAttached()
                 val expr = (request.arguments?.get("expr") as? JsonPrimitive)?.contentOrNull
                     ?: throw ToolError(ErrorCode.InvalidTarget, "Missing `expr`.")
@@ -404,7 +404,7 @@ object InspectionTools {
             ),
             toolAnnotations = ToolAnnotations(readOnlyHint = true, openWorldHint = false),
         ) { request ->
-            runTool {
+            runTool(allowsDuringPlan = true, toolName = "get_frames") {
                 val vm = Session.requireAttached()
                 val threadId = (request.arguments?.get("thread_id") as? JsonPrimitive)?.longOrNull
                     ?: throw ToolError(ErrorCode.InvalidTarget, "Missing `thread_id`.")
@@ -456,7 +456,7 @@ object InspectionTools {
             ),
             toolAnnotations = ToolAnnotations(readOnlyHint = true, openWorldHint = false),
         ) { request ->
-            runTool {
+            runTool(allowsDuringPlan = true, toolName = "get_locals") {
                 val vm = Session.requireAttached()
                 val frameId = (request.arguments?.get("frame_id") as? JsonPrimitive)?.contentOrNull
                     ?: throw ToolError(ErrorCode.InvalidTarget, "Missing `frame_id`.")
@@ -510,7 +510,7 @@ object InspectionTools {
             ),
             toolAnnotations = ToolAnnotations(readOnlyHint = true, openWorldHint = false),
         ) { request ->
-            runTool {
+            runTool(allowsDuringPlan = true, toolName = "inspect_object") {
                 Session.requireAttached()
                 val refId = (request.arguments?.get("ref") as? JsonPrimitive)?.contentOrNull
                     ?: throw ToolError(ErrorCode.InvalidTarget, "Missing `ref` argument.")
@@ -575,7 +575,7 @@ object InspectionTools {
             ),
             toolAnnotations = ToolAnnotations(readOnlyHint = true, openWorldHint = false),
         ) { request ->
-            runTool {
+            runTool(allowsDuringPlan = true, toolName = "get_array_slice") {
                 Session.requireAttached()
                 val refId = (request.arguments?.get("ref") as? JsonPrimitive)?.contentOrNull
                     ?: throw ToolError(ErrorCode.InvalidTarget, "Missing `ref`.")
@@ -620,7 +620,7 @@ object InspectionTools {
             ),
             toolAnnotations = ToolAnnotations(readOnlyHint = true, openWorldHint = false),
         ) { request ->
-            runTool {
+            runTool(allowsDuringPlan = true, toolName = "frame_snapshot") {
                 Session.requireAttached()
                 val paused = Session.requirePaused()
                 val depth = ((request.arguments?.get("depth") as? JsonPrimitive)?.intOrNull ?: 5)
@@ -657,7 +657,7 @@ object InspectionTools {
             inputSchema = ToolSchema(),
             toolAnnotations = ToolAnnotations(readOnlyHint = true, openWorldHint = false),
         ) {
-            runTool {
+            runTool(allowsDuringPlan = true, toolName = "list_threads") {
                 val vm = Session.requireAttached()
                 val threads = vm.allThreads()
                 toolOk {

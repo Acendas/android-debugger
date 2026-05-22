@@ -1,49 +1,84 @@
 ---
 name: ad-catch
-description: Break on an Android exception and root-cause it.
-argument-hint: "[exception-class | \"any\" | empty for all uncaught]"
-allowed-tools: mcp__android-debugger__connection_status, mcp__android-debugger__add_exception_breakpoint, mcp__android-debugger__wait_for_event, mcp__android-debugger__frame_snapshot, mcp__android-debugger__exception_summary, mcp__android-debugger__inspect_object, mcp__android-debugger__remove_breakpoint, mcp__android-debugger__evaluate
+description: Break on an Android exception and root-cause it via plan.
+model: opus
 ---
 
-# Catch — break on the next throw and root-cause it
+# Catch — author a Debug Plan that traps the next throw and root-causes it
 
-The high-leverage exception-triage workflow. User has a crash or an exception they can't pin down; this skill puts a breakpoint on the throw site and runs the analysis when it fires.
+Author a Debug Plan that installs an exception breakpoint, captures the failing frame's locals, grades a hypothesis about why, and resumes. The orchestrator submits the plan, polls progress events, and reads the structured report. Interactive drill-down is reserved for the cases the plan can't fully grade.
 
-## What you do
+## When to use
 
-1. Call `mcp__android-debugger__connection_status`. If not attached, tell the user to run `/android-debugger:ad-attach` first and stop.
+The user described a crash, NullPointerException, IllegalStateException, or similar exception in a known Android app process. They have an exception class (e.g., `java.lang.NullPointerException`, `com.example.MyException`) and ideally a package filter to narrow delivery.
 
-2. Resolve the exception class. Argument shapes:
-   - Empty or literal `"any"` → catch ALL uncaught exceptions (`add_exception_breakpoint` with no `class`).
-   - Short name (no dots, e.g. `NullPointerException`) → read `skills/ad-catch/references/exception-fqn-table.md` and apply the resolution-order list there. Try each prefix in order, stop at the first existing class; ask the user to disambiguate if the name maps to multiple FQNs (e.g., three `CancellationException` variants).
-   - Fully qualified (contains dots, e.g. `com.example.MyException`) → use as-is, never re-resolve.
+## Preflight
 
-2.5. **Yellow-flag check.** Before calling `add_exception_breakpoint`, check whether the resolved FQN is in the yellow-flag list at `skills/ad-catch/references/exception-fqn-table.md` — exceptions like `kotlinx.coroutines.CancellationException`, `SecurityException`, `ActivityNotFoundException`, `DeadObjectException` are usually expected control flow, not bugs. If yellow-flagged, print one short warning line per the file's "Confirm message" column and proceed only if the user confirms.
+1. Call `connection_status`. If not attached, tell the user to run `/android-debugger:ad-attach` and stop.
+2. Resolve the exception class:
+   - Empty / `"any"` → omit `class_pattern` in the plan setup (catches all).
+   - Short name (no dots) → look up the FQN list in `skills/ad-catch/references/exception-fqn-table.md`. Pick the first FQN that exists in the user's project; ask via `AskUserQuestion` if multiple candidates match.
+   - Already an FQN → use as-is.
+3. Yellow-flag check against the table — names like `kotlinx.coroutines.CancellationException` are usually control flow. Warn and confirm before proceeding.
 
-3. Call `mcp__android-debugger__add_exception_breakpoint` with `{ class: <fqn>, caught: false, uncaught: true }` (or omit `class` for the "any" / empty case). By default we only break on **uncaught** exceptions — caught exceptions in production code (e.g., parser fallbacks) are noisy. Add `caught: true` only if the user explicitly asks for both.
+## Compose the plan
 
-4. Tell the user **what to do**: "Set. Now reproduce the crash — open the app, take the action that triggers it. I'll wait up to 60 seconds for the next throw."
+Read `references/plan-template.json`. Substitute:
 
-5. Call `mcp__android-debugger__wait_for_event` with `{ timeout_ms: 60000, types: ["exception"] }`.
+- `<<EXCEPTION_FQN>>` → the resolved FQN (or remove the `class_pattern` field for the "any" case).
+- `<<FILTER_CLASS>>` → a package narrowing pattern such as `com.example.login.*` (or remove the field if the user didn't narrow).
+- `<<PLAN_NAME>>` → a slug like `catch-npe-login`.
 
-6. On hit:
-   - Call `mcp__android-debugger__frame_snapshot` (depth: 8 — exceptions often have informative ancestor frames).
-   - Call `mcp__android-debugger__exception_summary({ ref: <exception_id from the event> })`. The tool returns `{ exception_class, message, throw_site, trigger_frame, cause_chain, stack_summary }` — exactly the structured root-cause data you'd otherwise assemble by hand from `inspect_object` + frame walking. Use this as the basis for the report; fall back to `inspect_object` only if the tool errors with `code: invalid_target` (the ref expired or isn't actually a `Throwable`).
-   - State the most likely root cause based on the `trigger_frame`'s locals (read them from the existing `frame_snapshot`, not by re-reading the same frame). If a `null` parameter caused a NPE, name the parameter and the method that received it.
-   - Propose a **fix shape** (don't write code unless asked).
-   - Suggest next steps: inspect specific locals, step out to see the caller, or `:trace` to find when the contributing state was set.
+Keep `caught: false, uncaught: true` unless the user explicitly asks to break on caught exceptions too. Adjust hypotheses to the user's stated theory — e.g., if they said "I think `token` is null at the throw," set `expect: "frame.locals['token'] = null"`. If they have no theory, keep the default `event.exception_class != null` smoke check.
 
-7. On timeout (`timed_out: true`):
-   - Tell the user the breakpoint is still set and they can reproduce again. Offer to remove it via `remove_breakpoint`.
+> **FEEL string-literal quoting:** kfeel 1.0.0 only accepts **single-quoted** strings (`'exception'`, `'token'`). Double-quoted FEEL strings (`"exception"`) will fail compile. Use single quotes for any string literal inside a FEEL expression. JSON keys / values that aren't FEEL stay double-quoted as JSON requires.
 
-8. After analysis: ask whether to keep the breakpoint set (for repeated reproductions) or remove it.
+Validate before launching:
 
-## Anti-hallucination rules
+```
+validate_plan(plan: <composed plan>)
+```
 
-Read `skills/ad-explain/references/anti-hallucination.md` and follow the snapshot-grounding + evaluate-safety rules there. Apply them to every claim made about the exception's state — quote actual locals from the snapshot, never invent a value, refuse mutating `evaluate` calls.
+Fix all returned errors and re-validate. Do not submit a plan with compile errors.
 
-## What you do NOT do
+## Launch + monitor
 
-- Do not silently leave breakpoints set on session detach — they vanish anyway, but tell the user.
-- Do not propose fixes from memory of similar bugs — ground every claim in what the snapshot shows.
-- Do not break on caught exceptions by default; production code throws lots of caught exceptions for control flow.
+```
+run_debug_plan(plan: <validated plan>)
+```
+
+Capture the returned `plan_id`. Tell the user: "Plan armed. Reproduce the crash now — open the app and trigger it. I'll harvest the failing frame when it fires."
+
+Then loop:
+
+```
+wait_for_event(timeout_ms: 30000, types: ["plan_progress"])
+```
+
+Per event subtype:
+
+- `event_handled` — note the event seq for the narrative.
+- `snapshot_captured` — record the `snap#<plan_id>:<seq>` ref.
+- `hypothesis_graded` — note the transition (`matched` / `contradicted`).
+- `completed` — terminal. Read the final report: grades + `feel_outputs` + `snapshot_refs`. Present the root-cause to the user grounded in actual values from the report (never invented).
+- `yielded` — VM is paused at the failing frame. Read the partial report. If you can root-cause from what's already there, summarize and call `abort_plan(plan_id)` to release the VM. If you need a deeper hypothesis, call `abort_plan` FIRST (so the VM resumes — never think hard while the app is frozen), then re-author with the new hypothesis and re-submit.
+- `aborted` / `timeout` / `error` — read the partial report, surface what was captured, propose the next move.
+
+## After terminal
+
+Use the report's `snapshot_refs` to drill in with `inspect_object(snap#<plan_id>:<seq>, vobj#<id>)` when the user wants more depth — snapshot refs survive past plan termination until the next `run_debug_plan`.
+
+If a hypothesis came back `contradicted`, that's a real finding: the user's theory was wrong. Present what the snapshot showed instead.
+
+## When to drop to interactive
+
+The plan handles the routine catch-and-grade path. Drop to interactive (no plan) when:
+
+- The captured snapshot needs `eval_method` on a live frame.
+- The user wants to step from the captured frame.
+
+In both cases, prefer `abort_plan` → think hard out-of-band → re-submit a new plan, over `pause_plan` (which holds the VM frozen while you reason).
+
+## Anti-hallucination
+
+Read `skills/ad-explain/references/anti-hallucination.md`. Ground every claim in the report's `feel_outputs` and `snapshot_refs` — never invent a local value, never paraphrase a hypothesis grade that wasn't returned.

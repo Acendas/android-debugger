@@ -42,6 +42,7 @@ object BreakpointInstaller {
         hitCount: Int? = null,
         logMessage: String? = null,
         enabled: Boolean = true,
+        planId: String? = null,
     ): InstallResult {
         val meta = BreakpointMeta(
             id = id,
@@ -51,6 +52,7 @@ object BreakpointInstaller {
             condition = condition,
             hitCount = hitCount,
             logMessage = logMessage,
+            planId = planId,
         ).also { it.enabled = enabled }
 
         val locations = SourceResolver.resolve(vm, file, line)
@@ -85,6 +87,7 @@ object BreakpointInstaller {
         caught: Boolean,
         uncaught: Boolean,
         enabled: Boolean = true,
+        planId: String? = null,
     ): InstallResult {
         val meta = BreakpointMeta(
             id = id,
@@ -92,6 +95,7 @@ object BreakpointInstaller {
             exceptionClass = exceptionClass,
             caught = caught,
             uncaught = uncaught,
+            planId = planId,
         ).also { it.enabled = enabled }
 
         val erm = vm.eventRequestManager()
@@ -127,12 +131,14 @@ object BreakpointInstaller {
         methodClass: String,
         methodName: String,
         enabled: Boolean = true,
+        planId: String? = null,
     ): InstallResult {
         val meta = BreakpointMeta(
             id = id,
             kind = BreakpointKind.METHOD_ENTRY,
             methodClass = methodClass,
             methodName = methodName,
+            planId = planId,
         ).also { it.enabled = enabled }
         val erm = vm.eventRequestManager()
         val req: MethodEntryRequest = erm.createMethodEntryRequest().apply {
@@ -151,12 +157,14 @@ object BreakpointInstaller {
         methodClass: String,
         methodName: String,
         enabled: Boolean = true,
+        planId: String? = null,
     ): InstallResult {
         val meta = BreakpointMeta(
             id = id,
             kind = BreakpointKind.METHOD_EXIT,
             methodClass = methodClass,
             methodName = methodName,
+            planId = planId,
         ).also { it.enabled = enabled }
         val erm = vm.eventRequestManager()
         val req: MethodExitRequest = erm.createMethodExitRequest().apply {
@@ -187,6 +195,7 @@ object BreakpointInstaller {
         wantAccess: Boolean,
         wantModification: Boolean,
         enabled: Boolean = true,
+        planId: String? = null,
     ): InstallResult {
         if (!wantAccess && !wantModification) {
             throw ToolError(
@@ -217,6 +226,7 @@ object BreakpointInstaller {
             kind = if (wantAccess) BreakpointKind.FIELD_ACCESS else BreakpointKind.FIELD_MODIFICATION,
             fieldClass = fieldClass,
             fieldName = fieldName,
+            planId = planId,
         ).also { it.enabled = enabled }
 
         val erm = vm.eventRequestManager()
@@ -256,6 +266,7 @@ object BreakpointInstaller {
         id: Int,
         classPattern: String,
         enabled: Boolean = true,
+        planId: String? = null,
     ): InstallResult {
         if (classPattern.isBlank()) {
             throw ToolError(
@@ -267,6 +278,7 @@ object BreakpointInstaller {
             id = id,
             kind = BreakpointKind.CLASS_LOAD,
             classPattern = classPattern,
+            planId = planId,
         ).also { it.enabled = enabled }
 
         val erm = vm.eventRequestManager()

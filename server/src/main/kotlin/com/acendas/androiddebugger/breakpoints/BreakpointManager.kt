@@ -75,6 +75,13 @@ data class BreakpointMeta(
      * session is stopped when the breakpoint is removed.
      */
     val jvmtiTraceBufferId: String? = null,
+    /**
+     * v1.7: when set, this BP was installed as part of a Debug Plan's setup phase;
+     * [BreakpointManager.removeByPlan] will tear down every BP carrying this tag on
+     * plan completion / abort / yield. Plan-owned breakpoints are scoped to the
+     * plan's run and are NOT persisted across detach (see [SessionPersistence.save]).
+     */
+    val planId: String? = null,
 ) {
 
     /** Live JDI requests created for this meta. Plural because a line can resolve to multiple locations. */
@@ -217,6 +224,26 @@ object BreakpointManager {
         meta.activeRequests.clear()
         meta.deferredPrepareRequests.clear()
         return true
+    }
+
+    /**
+     * Remove every breakpoint tagged with [planId]. Returns the list of removed ids.
+     * Idempotent; ids that don't exist (already removed) are skipped silently.
+     *
+     * v1.7 Debug Plan teardown — called by the Plan Executor on completion / abort /
+     * yield. Plan-owned breakpoints are scoped to the plan's run; user-owned bps
+     * (planId == null) are untouched.
+     */
+    fun removeByPlan(vm: VirtualMachine, planId: String): List<Int> {
+        // Snapshot the metas first so we don't mutate the map while iterating it via
+        // remove() below. ConcurrentHashMap.values() is weakly-consistent but a defensive
+        // toList() keeps the contract explicit.
+        val targets = metas.values.toList().filter { it.planId == planId }.map { it.id }
+        val removed = mutableListOf<Int>()
+        for (id in targets) {
+            if (remove(vm, id)) removed += id
+        }
+        return removed
     }
 
     fun setEnabled(id: Int, enabled: Boolean): Boolean {

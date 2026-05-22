@@ -1,68 +1,108 @@
 ---
 name: ad-bisect-flaky
-description: Bisect a flaky Android instrumentation test.
-argument-hint: "<test class.method>"
-allowed-tools: Read, Grep, mcp__android-debugger__connection_status, mcp__android-debugger__attach, mcp__android-debugger__detach, mcp__android-debugger__add_exception_breakpoint, mcp__android-debugger__add_line_breakpoint, mcp__android-debugger__list_breakpoints, mcp__android-debugger__remove_breakpoint, mcp__android-debugger__wait_for_event, mcp__android-debugger__frame_snapshot, mcp__android-debugger__evaluate, mcp__android-debugger__resume, mcp__android-debugger__tail_logcat, mcp__android-debugger__read_logcat
+description: Bisect an Android flaky test via plan rerun loop.
+model: opus
 ---
 
-# Bisect-flaky — loop a flaky test until you can see the divergence
+# Bisect-flaky — author a Debug Plan, run the test in a loop, diff pass vs fail
 
-Flaky tests are state-divergence bugs masquerading as "intermittent." This skill runs the test in a loop in debug-wait mode, captures the state when it fails vs. when it passes, and points at the difference.
+Flaky tests are state-divergence bugs masquerading as "intermittent." Author a Debug Plan whose setup captures state at the failing assertion line, run the test through the loop the user drives via `am instrument`, and aggregate per-run reports. The first divergence between pass and fail captures is the flake trigger.
 
-The loop is human-in-the-loop: Claude orchestrates the breakpoints + analysis; the user launches the test runs (because launching `am instrument` from a skill bash block crosses too much device state to do robustly).
+## When to use
 
-## What you do
+The user named an Android instrumentation test that fails intermittently (`<class>.<method>`). They want the divergence point, not a guess.
 
-0. **Preflight: is this actually bisectable?** Read `skills/ad-bisect-flaky/references/flake-trigger-heuristics.md` and apply its timing-flake signature checklist *before* setting any breakpoints. Breakpoints can capture state at a chosen line but they can't capture *timing windows* — `IdlingResource` starvation, GC pauses, `Dispatchers.Default` mixing, system-clock drift produce flakes whose root cause is "the window closed", not "this line had the wrong value". Setting a bp on a timing-window flake usually *closes* the window (the bp itself slows execution), and the test stops failing under the debugger. If the symptom matches a timing signature, route to the file's logpoint-sweep fallback instead — place logpoints across timing-sensitive entries and harvest the timeline across 10–20 runs. If no timing signature matches, continue with the bisect loop below.
+## Preflight: is this actually bisectable?
 
-1. Call `mcp__android-debugger__connection_status`. If attached, ask the user to detach first (the test runner attaches debug-wait — we'll re-attach to the test PID).
+Read `skills/ad-bisect-flaky/references/flake-trigger-heuristics.md` and apply the timing-flake signature checklist **first**. Breakpoints capture state at a chosen line but can't capture timing windows — `IdlingResource` starvation, GC pauses, `Dispatchers.Default` mixing, system-clock drift produce flakes whose root cause is "the window closed." If the symptom matches a timing signature, route to `:trace`-style logpoint sweep instead (the plan in `:trace` runs without holding the VM and preserves timing). If no timing signature matches, continue here.
 
-2. **Resolve the test target.** The user provides `<class>.<method>` or just the class. Grep the user's project to confirm the test class file path; warn if not found.
+## Preflight
 
-3. **Identify likely flake roots** using the ranked candidate-pattern list in `skills/ad-bisect-flaky/references/flake-trigger-heuristics.md`. Match the highest-ranked patterns first (shared mutable state → `delay()`/`sleep()` → `Dispatchers.Default` mixing → wall-clock reads → IdlingResource starvation → multi-process SharedPreferences → RxJava scheduler mixing). Pick 3–5 candidate breakpoint sites that match the highest-ranked patterns; do not invent candidates that aren't in the list — flake roots come from a known set of patterns and unbounded LLM judgment produces low-precision picks.
+1. Call `connection_status`. If attached, ask the user to detach — the test runner attaches debug-wait and we re-attach to the test PID per round.
+2. **Resolve the test target.** Grep the project to confirm the test class file; warn if not found.
+3. **Identify 3–5 candidate flake roots** using the ranked pattern list in the heuristics file. Do not invent candidates outside that list.
 
-4. **Tell the user how to run the test in debug-wait mode.** Provide a concrete command they can paste — cross-platform (works on macOS / Linux / Windows shells with `adb` on PATH):
+## Tell the user how to drive the loop
+
+Provide the cross-platform command they'll paste once per round (the skill itself does not shell `am instrument` — too much device state):
+
+```
+adb shell am instrument -w -e debug true -e class <fully.qualified.test.Class>#<method> <test.package>/<runner.fully.qualified>
+```
+
+The runner waits for the debugger. User runs `/android-debugger:ad-attach <pid>` once paused. Then control returns to this skill.
+
+## Compose the plan
+
+Read `references/plan-template.json`. The template installs a `class_load_bp` on the test class (so the line breakpoint resolves once the test loads) plus a `line_bp` at the assertion line, and harvests locals around the suspect variable.
+
+Substitute:
+
+- `<<PLAN_NAME>>` → e.g. `bisect-test-signin-retry`.
+- `<<TEST_FQN>>` → test class FQN.
+- `<<ASSERT_FILE>>` + `<<ASSERT_LINE>>` → the failing assertion location.
+- `<<SUSPECT_LOCAL>>` → the local you suspect diverges (e.g., `counter`, `cached`). Adjust the hypothesis `expect` to a guess about its value.
+
+Validate:
+
+```
+validate_plan(plan: <composed plan>)
+```
+
+## Per-round loop
+
+For each round:
+
+1. **User launches** the `am instrument` command.
+2. **User attaches** via `/android-debugger:ad-attach <pid>`.
+3. **Submit the plan**:
 
    ```
-   adb shell am instrument -w -e debug true -e class <fully.qualified.test.Class>#<method> <test.package>/<runner.fully.qualified>
+   run_debug_plan(plan: <composed plan>)
    ```
 
-   The runner waits for the debugger to attach. Tell them the PID will appear in the output as `Waiting for debugger`.
+   Capture `plan_id`.
 
-   **If the user doesn't know the runner FQN**, point them at the AGP-built manifest: `app/build/intermediates/manifest_merge_blame_file/androidTest*/AndroidManifest.xml` — look for `<instrumentation android:name="..."/>`. Default modern AGP value is `androidx.test.runner.AndroidJUnitRunner`; Hilt-using projects often have a custom runner. If the merged-manifest directory is missing, suggest `./gradlew :app:processDebugAndroidTestManifest` to produce it. (See `skills/ad-bisect-flaky/references/flake-trigger-heuristics.md` for the full hint.)
+4. **Poll progress**:
 
-5. **Walk the user through the loop:**
-   - **Round N:** User launches the test → it pauses waiting for debugger → user runs `/android-debugger:ad-attach <pid>` → control comes back here.
-   - At your candidate breakpoints, call `add_line_breakpoint` for the assertion line and the top-1 flake-suspect line.
-   - Tell the user: "Resume; if the test passes, tell me 'pass'. If it fails, tell me 'fail' — I'll inspect."
-   - If `wait_for_event` returns a `stopped` event (breakpoint hit), call `frame_snapshot` and capture key locals via `evaluate`. Stash the captured state per round (label as `pass-1`, `fail-1`, etc.).
-   - On `resume`, the test concludes; user reports pass/fail.
+   ```
+   wait_for_event(timeout_ms: 60000, types: ["plan_progress"])
+   ```
 
-6. **Aim for ≥1 pass and ≥1 fail captured.** Once you have both:
-   - Diff the captured states. The first divergence is the flake trigger.
-   - If states look identical, the divergence is in something we didn't capture (timing, GC pause, system clock). Add more breakpoints around timing-sensitive code and re-run.
+   On `completed`, read the report's `feel_outputs` and `snapshot_refs`. Stash under a per-round label: `pass-1`, `fail-1`, etc.
 
-7. **Tighten with a conditional breakpoint** once you have a hypothesis. Example: if the suspect is `userCount > expected`, set `add_line_breakpoint({ ..., condition: "userCount > 10" })` so the bp only fires when the flaky condition is true. Iterate the loop with the tighter condition.
+5. **User reports pass/fail.** Record the verdict alongside the captured state.
 
-8. **Final report:**
-   - State the trigger condition in plain English.
-   - Show the divergent locals.
-   - Propose a fix shape (e.g., "the cache isn't being cleared between tests; add `@After cache.clear()`" or "the assertion races against an async write; use `runTest { advanceUntilIdle() }`").
-   - Cleanup: `remove_breakpoint` for every id in `list_breakpoints`. Detach.
+6. **Persist** the report locally for cross-round comparison. The orchestrator may keep an in-memory map keyed by round label; for longer sessions, write a small JSON file under `$CLAUDE_PLUGIN_DATA/android-debugger/bisect/<plan_id>-<round>.json` using `save_plan` semantics (atomic write).
 
-## Anti-hallucination rules
+7. **User detaches**, runs again, attaches the next round.
 
-Read `skills/ad-explain/references/anti-hallucination.md` and follow the snapshot-grounding + evaluate-safety rules there. The flake-loop has two extra grounding requirements specific to this skill:
+## After ≥1 pass and ≥1 fail captured
 
-- **Never** claim a divergent local without grounding in **two** captured snapshots — quote the actual values (`pass-1: counter=10` vs. `fail-3: counter=11`). The flake hypothesis must point at a real, observed difference, not a claimed one.
-- **Never** propose a fix until you've captured ≥1 pass and ≥1 fail. If you can't reproduce the failure within 10 rounds, surface that honestly: "ran 10 iterations, all passed — couldn't observe the flake; recommend more aggressive test seeding, a different breakpoint set, or routing to logpoint sweep per the timing-flake preflight."
+Diff the captured states across rounds:
+
+- The first divergent `feel_output` is the flake trigger.
+- If states look identical, the divergence is in something not captured (timing, GC, system clock) — add more setup entries around timing-sensitive code and re-run.
+
+## Tighten with a conditional plan
+
+Once you have a hypothesis, re-author the plan with a `condition` on the line breakpoint so it only fires under the failing predicate (e.g., `condition: "counter > 10"`). Submit the tighter plan as a fresh `run_debug_plan` per round. Iterate.
+
+## Final report
+
+- State the trigger condition in plain English, grounded in actual captured values.
+- Show the divergent locals as `pass-N: <val>` vs `fail-M: <val>`.
+- Propose a fix shape (e.g., "the cache isn't being cleared between tests; add `@After cache.clear()`").
+
+## Anti-hallucination
+
+Read `skills/ad-explain/references/anti-hallucination.md`. Two extra rules specific to this skill:
+
+- Never claim a divergent local without grounding in **two** captured reports — quote the actual values.
+- Never propose a fix until you've captured ≥1 pass and ≥1 fail. If after 10 rounds you can't reproduce the failure, surface that honestly and recommend the logpoint-sweep fallback per the heuristics file.
 
 ## What you do NOT do
 
-- Do not run `am instrument` from this skill's bash. Test runners interact with installation state, signing, runner classes — too brittle to wrap. Tell the user the command and let them run it.
-- Do not declare a flake "fixed" without seeing both pass and fail captured at least once.
-- Do not place breakpoints on every line of the test — start with 3–5 and tighten with conditions.
-
-## Cross-platform notes
-
-The user pastes the `adb shell am instrument` command into their own shell. It works the same on macOS / Linux / Windows. The skill itself doesn't shell out — only the user does.
+- Do not run `am instrument` from this skill. Tell the user the command; let them run it.
+- Do not declare a flake "fixed" without observing both pass and fail in captured reports.
+- Do not place setup breakpoints on every line of the test — start with 3–5 and tighten with `condition` once you have a hypothesis.

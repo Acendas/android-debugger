@@ -36,6 +36,8 @@ object Tools {
         com.acendas.androiddebugger.tools.HeapTools.register(server)
         com.acendas.androiddebugger.tools.MethodTraceTools.register(server)
         com.acendas.androiddebugger.tools.AllocTraceTools.register(server)
+        // v1.7 — Debug Plan tools.
+        com.acendas.androiddebugger.tools.PlanTools.register(server)
     }
 
     private fun registerServerInfo(server: Server) {

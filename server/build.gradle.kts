@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "com.acendas.androiddebugger"
-version = "1.6.0"
+version = "1.7.2"
 
 repositories {
     mavenCentral()

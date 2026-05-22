@@ -89,7 +89,7 @@ object AndroidTools {
             ),
             toolAnnotations = ToolAnnotations(readOnlyHint = false, openWorldHint = true),
         ) { request ->
-            runTool {
+            runTool(allowsDuringPlan = true, toolName = "tail_logcat") {
                 // Per R-16: gate on attached state. A pre-attach `tail_logcat` would
                 // create a buffer that survives until detach, leaking adb subprocesses
                 // tied to no debug session.
@@ -168,7 +168,7 @@ object AndroidTools {
             ),
             toolAnnotations = ToolAnnotations(readOnlyHint = true, openWorldHint = false),
         ) { request ->
-            runTool {
+            runTool(allowsDuringPlan = true, toolName = "read_logcat") {
                 val args = request.arguments
                 val bufferId = (args?.get("buffer_id") as? JsonPrimitive)?.intOrNull
                     ?: throw ToolError(ErrorCode.InvalidTarget, "Missing `buffer_id`.")
@@ -249,7 +249,7 @@ object AndroidTools {
             ),
             toolAnnotations = ToolAnnotations(readOnlyHint = false, openWorldHint = false),
         ) { request ->
-            runTool {
+            runTool(allowsDuringPlan = true, toolName = "stop_logcat") {
                 val bufferId = (request.arguments?.get("buffer_id") as? JsonPrimitive)?.intOrNull
                     ?: throw ToolError(ErrorCode.InvalidTarget, "Missing `buffer_id`.")
                 val stopped = Session.logcatBuffers.stop(bufferId)
@@ -283,7 +283,7 @@ object AndroidTools {
             ),
             toolAnnotations = ToolAnnotations(readOnlyHint = false, openWorldHint = true),
         ) { request ->
-            runTool {
+            runTool(allowsDuringPlan = true, toolName = "dump_heap") {
                 val attachedPid = Session.pid
                 val argPid = (request.arguments?.get("pid") as? JsonPrimitive)?.intOrNull
                 val targetPid = argPid ?: attachedPid
@@ -365,7 +365,7 @@ object AndroidTools {
             inputSchema = ToolSchema(),
             toolAnnotations = ToolAnnotations(readOnlyHint = true, openWorldHint = true),
         ) {
-            runTool {
+            runTool(allowsDuringPlan = true, toolName = "get_current_activity") {
                 val serial = Session.serial ?: LifecycleTools.resolveSerial(null)
                 val args = buildList {
                     if (serial != null) { add("-s"); add(serial) }
@@ -404,7 +404,7 @@ object AndroidTools {
             inputSchema = ToolSchema(),
             toolAnnotations = ToolAnnotations(readOnlyHint = false, openWorldHint = true),
         ) {
-            runTool {
+            runTool(allowsDuringPlan = true, toolName = "dump_view_hierarchy") {
                 val serial = Session.serial ?: LifecycleTools.resolveSerial(null)
                 val devicePath = "/sdcard/window_dump.xml"
                 val dumpArgs = buildList {
@@ -486,7 +486,7 @@ object AndroidTools {
             ),
             toolAnnotations = ToolAnnotations(readOnlyHint = true, openWorldHint = true),
         ) { request ->
-            runTool {
+            runTool(allowsDuringPlan = true, toolName = "get_app_info") {
                 val pkg = (request.arguments?.get("package") as? JsonPrimitive)?.contentOrNull
                     ?: throw ToolError(ErrorCode.InvalidTarget, "Missing `package`.")
                 val serial = Session.serial ?: LifecycleTools.resolveSerial(null)

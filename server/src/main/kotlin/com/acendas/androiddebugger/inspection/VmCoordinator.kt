@@ -104,4 +104,62 @@ object VmCoordinator {
 
     /** Test/debug hook — read the in-flight op name without changing state. */
     fun currentOperation(): String? = current.get()
+
+    // -----------------------------------------------------------------------------------
+    // v1.7 — long-lived plan claim.
+    //
+    // The v1.5/1.6 mutex above is a *brief* single-flight gate for `invokeMethod` /
+    // `RedefineClasses` — held for the duration of one call. Debug Plans run for
+    // seconds-to-minutes and must coexist with read-only inspection tools. So plans
+    // claim a separate AtomicReference instead of holding the mutex.
+    //
+    // Semantics:
+    //   - Exactly one plan can be claimed at a time per process.
+    //   - Read-only tools (frame_snapshot, get_locals, inspect_object, evaluate FEEL,
+    //     ...) pass through regardless of the claim — they read the captured snapshot
+    //     store or inspect the paused VM safely.
+    //   - State-mutating tools (eval_method, set_field, resume, step_*, add_*_breakpoint
+    //     not owned by the plan, hot_swap_*) check `currentPlanId()` and either reject
+    //     (`vm_in_plan` via runTool's `allowsDuringPlan` gate) or — for plan-internal
+    //     calls — go through the existing `withExclusiveAccess` mutex inside the plan
+    //     executor itself.
+    //   - claim/release are idempotent for the same planId; calling release with a
+    //     different planId is a no-op (defensive against double-release races).
+    // -----------------------------------------------------------------------------------
+
+    private val activePlan: AtomicReference<String?> = AtomicReference(null)
+
+    /**
+     * Claim the long-lived plan slot. Throws [ToolError] with [ErrorCode.VmInPlan] if
+     * another plan is already active.
+     */
+    fun claimPlan(planId: String) {
+        if (!activePlan.compareAndSet(null, planId)) {
+            val existing = activePlan.get()
+            throw ToolError(
+                errorCode = ErrorCode.VmInPlan,
+                message = "Plan `$existing` is already running; cannot claim `$planId`.",
+                hint = "Call pause_plan / abort_plan on the active plan first.",
+                currentState = "PLAN_ACTIVE:$existing",
+            )
+        }
+    }
+
+    /**
+     * Release the plan slot. Idempotent — releasing the wrong planId is a no-op (defends
+     * against late releases from finalizers / cancellation paths).
+     */
+    fun releasePlan(planId: String) {
+        activePlan.compareAndSet(planId, null)
+    }
+
+    /** Read the in-flight plan id, or null if no plan is active. */
+    fun currentPlanId(): String? = activePlan.get()
+
+    /** Test hook — reset both lock state (for isolated test runs). */
+    internal fun resetForTest() {
+        if (mutex.isLocked) runCatching { mutex.unlock() }
+        current.set(null)
+        activePlan.set(null)
+    }
 }

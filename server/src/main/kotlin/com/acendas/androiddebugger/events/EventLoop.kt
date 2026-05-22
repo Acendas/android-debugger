@@ -127,6 +127,18 @@ class EventLoop(
     }
 
     /**
+     * Publish a synthetic, non-JDI [DebugEvent] (e.g., [DebugEvent.PlanProgress]) into the
+     * same dispatch/channel surface used by JDI-derived events. The Plan Executor calls
+     * this from its coroutine to emit progress signals that `wait_for_event` observes
+     * exactly like a `stopped` / `exception`. Public-facing thin wrapper around the
+     * existing private [dispatch] — keeps the per-emit dispatch policy (listener-first,
+     * fall back to channel) in one place. Per v1.7 Debug Plan spec §Streaming.
+     */
+    fun dispatchSynthetic(event: DebugEvent) {
+        dispatch(event)
+    }
+
+    /**
      * Dispatch a freshly-arrived [DebugEvent]. Hands it to the first matching listener
      * and returns; if no listener matches, falls back to the channel so a later
      * `wait_for_event` can still see it. Per R-07.

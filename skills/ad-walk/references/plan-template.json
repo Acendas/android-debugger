@@ -1,0 +1,35 @@
+{
+  "name": "<<PLAN_NAME>>",
+  "version": 1,
+  "timeout_ms": 60000,
+  "max_events": 50,
+  "until": "dbg.frame_count() < entry_depth",
+  "setup": [
+    {
+      "kind": "method_entry_bp",
+      "method_class": "<<METHOD_CLASS>>",
+      "method_name": "<<METHOD_NAME>>"
+    }
+  ],
+  "on_event": [
+    {
+      "match": "event.kind = 'breakpoint' and event.seq = 1",
+      "actions": [
+        { "kind": "snapshot", "depth": 5 },
+        { "kind": "feel", "feel": "dbg.frame_count()", "as": "entry_depth" },
+        { "kind": "feel", "feel": "frame.method", "as": "current_method" },
+        { "kind": "log", "log": "Walk entered <<METHOD_CLASS>>.<<METHOD_NAME>>" },
+        { "kind": "step_into" }
+      ]
+    },
+    {
+      "match": "event.kind = 'step'",
+      "actions": [
+        { "kind": "snapshot", "depth": 5 },
+        { "kind": "feel", "feel": "frame.method", "as": "current_method" },
+        { "kind": "step_into" }
+      ]
+    }
+  ],
+  "harvest": ["snapshots", "feel_outputs"]
+}

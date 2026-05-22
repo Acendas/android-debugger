@@ -117,7 +117,7 @@ object WatchTools {
             inputSchema = ToolSchema(),
             toolAnnotations = ToolAnnotations(readOnlyHint = true, openWorldHint = false),
         ) {
-            runTool {
+            runTool(allowsDuringPlan = true, toolName = "list_watches") {
                 val list = Session.watchManager.list()
                 toolOk {
                     put("watches", buildJsonArray {
@@ -163,7 +163,7 @@ object WatchTools {
             ),
             toolAnnotations = ToolAnnotations(readOnlyHint = true, openWorldHint = false),
         ) { request ->
-            runTool {
+            runTool(allowsDuringPlan = true, toolName = "count_instances") {
                 val vm = Session.requireAttached()
                 val className = (request.arguments?.get("class") as? JsonPrimitive)?.contentOrNull
                     ?: throw ToolError(ErrorCode.InvalidTarget, "Missing `class`.")
@@ -264,7 +264,7 @@ object WatchTools {
             ),
             toolAnnotations = ToolAnnotations(readOnlyHint = true, openWorldHint = false),
         ) { request ->
-            runTool {
+            runTool(allowsDuringPlan = true, toolName = "find_referrers") {
                 Session.requireAttached()
                 val refId = (request.arguments?.get("ref") as? JsonPrimitive)?.contentOrNull
                     ?: throw ToolError(ErrorCode.InvalidTarget, "Missing `ref`.")

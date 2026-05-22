@@ -530,7 +530,7 @@ object BreakpointTools {
             inputSchema = ToolSchema(),
             toolAnnotations = ToolAnnotations(readOnlyHint = true, openWorldHint = false),
         ) {
-            runTool {
+            runTool(allowsDuringPlan = true, toolName = "list_breakpoints") {
                 val all = BreakpointManager.all()
                 toolOk {
                     put("breakpoints", buildJsonArray {
@@ -636,7 +636,7 @@ object BreakpointTools {
             ),
             toolAnnotations = ToolAnnotations(readOnlyHint = true, openWorldHint = false),
         ) { request ->
-            runTool {
+            runTool(allowsDuringPlan = true, toolName = "list_logpoint_entries") {
                 Session.requireAttached()
                 val since = (request.arguments?.get("since") as? JsonPrimitive)?.longOrNull ?: 0L
                 val entries = LogpointBuffer.since(since)

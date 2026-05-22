@@ -1,0 +1,36 @@
+{
+  "name": "<<PLAN_NAME>>",
+  "version": 1,
+  "timeout_ms": 120000,
+  "max_events": 200,
+  "max_event_rate": 100,
+  "setup": [
+    {
+      "kind": "method_entry_bp",
+      "method_class": "com.example.login.LoginViewModel",
+      "method_name": "onLoginClick",
+      "log_message": "LoginVm.onLoginClick user={user.id}"
+    },
+    {
+      "kind": "method_entry_bp",
+      "method_class": "com.example.login.AuthRepository",
+      "method_name": "signIn",
+      "log_message": "AuthRepo.signIn user={username}"
+    },
+    {
+      "kind": "method_entry_bp",
+      "method_class": "com.example.login.LoginViewModel",
+      "method_name": "updateUiState",
+      "log_message": "LoginVm.updateUiState state={newState}"
+    }
+  ],
+  "on_event": [
+    {
+      "match": "event.kind = 'breakpoint'",
+      "actions": [
+        { "kind": "resume", "resume": true }
+      ]
+    }
+  ],
+  "harvest": ["logpoints", "feel_outputs"]
+}

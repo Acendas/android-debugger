@@ -139,7 +139,7 @@ object AllocTraceTools {
             ),
             toolAnnotations = ToolAnnotations(readOnlyHint = true, openWorldHint = false),
         ) { request ->
-            runTool {
+            runTool(allowsDuringPlan = true, toolName = "read_alloc_trace") {
                 Session.requireAttached()
                 val client = requireAgentClient()
                 val bufferId = (request.arguments?.get("buffer_id") as? JsonPrimitive)?.contentOrNull
@@ -208,7 +208,7 @@ object AllocTraceTools {
             inputSchema = ToolSchema(),
             toolAnnotations = ToolAnnotations(readOnlyHint = true, openWorldHint = false),
         ) {
-            runTool {
+            runTool(allowsDuringPlan = true, toolName = "list_alloc_traces") {
                 Session.requireAttached()
                 val client = requireAgentClient()
                 val list = AgentAllocTrace.list(client)

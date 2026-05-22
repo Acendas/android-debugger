@@ -103,4 +103,45 @@ sealed class DebugEvent {
             for ((k, v) in extra) put(k, v)
         }
     }
+
+    /**
+     * v1.7 Debug Plan progress signal. Emitted by the Plan Executor as it dispatches
+     * events through the plan's handler chain, captures snapshots, evaluates FEEL
+     * expressions, and reaches terminal states. Agent polls these via
+     * `wait_for_event(types=["plan_progress"])` for streaming visibility into a running
+     * plan; can also filter by `plan_id` payload.
+     *
+     * Subtypes (carried in `subtype` field):
+     *   - `event_handled` — a JDI event was matched by an on_event block; payload carries
+     *     the event description.
+     *   - `snapshot_captured` — a snapshot action ran; payload carries the snapshot ref.
+     *   - `feel_evaluated` — a feel action ran; payload carries the variable name + value.
+     *   - `hypothesis_graded` — a hypothesis transitioned to matched or contradicted.
+     *   - `yielded` — a yield_when fired; payload carries the reason.
+     *   - `aborted` — abort_plan was called or abort_when fired.
+     *   - `paused` — pause_plan was called.
+     *   - `completed` — plan ran to natural completion (max_events / until / no more
+     *     setup-owned events expected).
+     *   - `timeout` — timeout_ms elapsed.
+     *   - `error` — a non-recoverable executor error.
+     *
+     * `data` is a free-form JSON object the subtype-specific code attaches.
+     */
+    data class PlanProgress(
+        val planId: String,
+        val seq: Long,
+        val subtype: String,
+        val data: JsonObject = buildJsonObject {},
+    ) : DebugEvent() {
+        override val type: String = "plan_progress"
+        override fun toJson(): JsonObject = buildJsonObject {
+            put("type", type)
+            put("plan_id", planId)
+            put("seq", seq)
+            put("subtype", subtype)
+            // Flatten the per-subtype payload into the event so the agent doesn't have
+            // to descend a nested object on the common path.
+            for ((k, v) in data) put(k, v)
+        }
+    }
 }

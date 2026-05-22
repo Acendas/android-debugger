@@ -44,7 +44,7 @@ object AgentTools {
             inputSchema = ToolSchema(),
             toolAnnotations = ToolAnnotations(readOnlyHint = true, openWorldHint = false),
         ) {
-            runTool {
+            runTool(allowsDuringPlan = true, toolName = "agent_info") {
                 val state = Session.agentState
                 toolOk {
                     if (state == null) {

@@ -36,7 +36,7 @@ The first thing to run after install. Also the diagnostic to fall back to whenev
 
 - **Do not** install anything. The user installs their own toolchain.
 - **Do not** modify environment variables in shell rc files — show the user the export line and let them decide.
-- **Do not** fall back to a guessed adb path. The Kotlin `AdbLocator` is the single source of truth.
+- **Do not** fall back to a guessed adb path. The MCP server's resolver (env-var → `ANDROID_HOME`/`ANDROID_SDK_ROOT` → `PATH`) is the single source of truth.
 - **Do not** invoke the JDI debugger tools (`attach`, `set_line_breakpoint`, ...) from this skill — setup is only about plumbing.
 
 ## Cross-platform discipline

@@ -31,6 +31,33 @@ enum class ErrorCode(val code: String) {
      * opt in explicitly to invoke methods that change app state.
      */
     VmMutationRefused("vm_mutation_refused"),
+    /**
+     * Per v1.7 Debug Plan spec §Concurrency: a state-mutating tool was called while a
+     * Debug Plan is executing. Read-only inspection (frame_snapshot, get_locals,
+     * inspect_object, etc.) passes through; mutations (eval_method, set_field, resume,
+     * step_*, add_*_breakpoint outside the plan's setup, hot_swap_*) are gated. The
+     * error message names the active plan id so the agent can `pause_plan(id)` to take
+     * over interactively or `abort_plan(id)` to release the VM.
+     */
+    VmInPlan("vm_in_plan"),
+    /** v1.7: a plan compile failed — schema, FEEL parse, BP target, or bounds. */
+    PlanInvalid("plan_invalid"),
+    /** v1.7: a referenced plan_id is unknown (no active or recently-terminated plan). */
+    PlanUnknown("plan_unknown"),
+    /** v1.7: persisted plan file not found / corrupt / schema-version mismatch. */
+    PlanNotFound("plan_not_found"),
+    /**
+     * v1.7.1 (M1 hang mitigation): a tool body exceeded its wall-clock budget. The
+     * caller sees this instead of an infinite MCP wait. Hint names the elapsed budget
+     * so the agent can decide to retry with a fresh attach or abandon the operation.
+     */
+    ToolTimeout("tool_timeout"),
+    /**
+     * v1.7.1 (M2 hang mitigation): JDI socket attach exceeded its 10s ceiling and was
+     * force-closed via JdiSocketWedgeRecovery. The remote VM never completed the
+     * JDWP handshake — usually app process gone, JDWP port stale, or device wedged.
+     */
+    AttachTimeout("attach_timeout"),
     Internal("internal"),
 }
 
@@ -90,19 +117,65 @@ fun toolErr(
  * than blocking the coroutine pool indefinitely. [Evaluator] uses its own private mutex
  * inside the JDI thread context so there is no recursion against this outer lock.
  */
-suspend inline fun runTool(crossinline block: suspend () -> CallToolResult): CallToolResult = try {
-    val acquired = Session.mutex.tryAcquireWithTimeout(MUTEX_ACQUIRE_TIMEOUT_MS)
-    if (!acquired) {
+suspend inline fun runTool(
+    allowsDuringPlan: Boolean = false,
+    toolName: String = "tool",
+    wallClockMs: Long = DEFAULT_WALL_CLOCK_MS,
+    crossinline block: suspend () -> CallToolResult,
+): CallToolResult = try {
+    // v1.7: state-mutating tools are gated while a Debug Plan is executing. Read-only
+    // inspection passes through (allowsDuringPlan = true). The plan executor itself
+    // owns plan-scoped mutations; user calls during a plan must pause_plan / abort_plan
+    // first.
+    val activePlan = Session.activePlanId
+    if (!allowsDuringPlan && activePlan != null) {
         toolErr(
-            code = ErrorCode.VmBusy,
-            message = "Another tool call is currently holding the JDI session lock.",
-            hint = "Wait for the in-flight call to finish, or check connection_status.",
+            code = ErrorCode.VmInPlan,
+            message = "Tool `$toolName` cannot run while plan `$activePlan` is executing.",
+            hint = "Call pause_plan(plan_id) to take over interactively, or abort_plan(plan_id) to release the VM.",
+            currentState = "PLAN_ACTIVE:$activePlan",
         )
     } else {
-        try {
-            block()
-        } finally {
-            Session.mutex.unlock()
+        val acquired = Session.mutex.tryAcquireWithTimeout(MUTEX_ACQUIRE_TIMEOUT_MS)
+        if (!acquired) {
+            toolErr(
+                code = ErrorCode.VmBusy,
+                message = "Another tool call is currently holding the JDI session lock.",
+                hint = "Wait for the in-flight call to finish, or check connection_status.",
+            )
+        } else {
+            try {
+                // v1.7.1 (M1): wall-clock budget on every tool body. If the block exceeds
+                // the budget, we return tool_timeout (or vm_disconnected if the VM is now
+                // gone — M8 piggybacks here). Prevents a single wedged JDI call from
+                // hanging the MCP transport indefinitely. Callers that legitimately need
+                // longer (heap dump, hot_swap) opt into a larger wallClockMs.
+                val result = kotlinx.coroutines.withTimeoutOrNull(wallClockMs) { block() }
+                if (result == null) {
+                    // v1.7.1 (M8): on timeout, check whether the VM is still attached.
+                    // A timed-out call against a disconnected VM is almost certainly a
+                    // stale JDWP socket — surface vm_disconnected so the agent re-attaches
+                    // instead of retrying the same dead session.
+                    if (Session.vm == null) {
+                        toolErr(
+                            code = ErrorCode.VmDisconnected,
+                            message = "Tool `$toolName` timed out after ${wallClockMs}ms and the VM is no longer attached.",
+                            hint = "Rerun /android-debugger:ad-attach.",
+                        )
+                    } else {
+                        toolErr(
+                            code = ErrorCode.ToolTimeout,
+                            message = "Tool `$toolName` exceeded its wall-clock budget (${wallClockMs}ms).",
+                            hint = "If the VM is wedged, call detach to release and re-attach. Long-running tools (heap dump) accept higher wallClockMs.",
+                            currentState = Session.state.name,
+                        )
+                    }
+                } else {
+                    result
+                }
+            } finally {
+                Session.mutex.unlock()
+            }
         }
     }
 } catch (e: ToolError) {
@@ -132,6 +205,21 @@ suspend inline fun runTool(crossinline block: suspend () -> CallToolResult): Cal
  * `vm_busy` rather than hanging the MCP coroutine pool. Per R-01.
  */
 const val MUTEX_ACQUIRE_TIMEOUT_MS: Long = 30_000L
+
+/**
+ * v1.7.1 (M1 hang mitigation): default wall-clock budget for every tool body. Tools
+ * that legitimately need longer (heap dump pull = up to 2 min, hot_swap dexing) pass
+ * a larger `wallClockMs` to [runTool]. Customer-visible: any tool returns within this
+ * window even if the underlying JDI / JVMTI / adb call wedges.
+ *
+ * Tuning: 60s covers attach (10s socket cap from M2), eval_method (10s in Evaluator),
+ * heap walks (30s in HeapTools), method-trace ops (10s agent RPC), with headroom for
+ * coroutine scheduling. Higher-than-60s tools opt in case-by-case.
+ */
+const val DEFAULT_WALL_CLOCK_MS: Long = 60_000L
+
+/** Long-running tools (heap dump pull from device, hot_swap dexing) opt into this. */
+const val LONG_WALL_CLOCK_MS: Long = 180_000L
 
 /**
  * Try to acquire the mutex within [timeoutMs]. Returns `true` on success, `false` if

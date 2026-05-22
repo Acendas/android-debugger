@@ -73,7 +73,7 @@ object HeapTools {
             ),
             toolAnnotations = ToolAnnotations(readOnlyHint = true, openWorldHint = false),
         ) { request ->
-            runTool {
+            runTool(allowsDuringPlan = true, toolName = "iterate_heap_by_class") {
                 Session.requireAttached()
                 val client = Session.agentClient
                     ?: throw ToolError(
@@ -151,7 +151,7 @@ object HeapTools {
             ),
             toolAnnotations = ToolAnnotations(readOnlyHint = true, openWorldHint = false),
         ) { request ->
-            runTool {
+            runTool(allowsDuringPlan = true, toolName = "find_referrer_chain") {
                 Session.requireAttached()
                 val client = Session.agentClient
                     ?: throw ToolError(

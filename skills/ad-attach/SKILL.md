@@ -13,7 +13,7 @@ The user has a debuggable APK on a device/emulator and wants Claude driving the 
 
 1. Call `mcp__android-debugger__connection_status`. If `attached: true`, ask the user whether to detach first (don't auto-detach — they may have active breakpoints). If they confirm, call `/android-debugger:ad-detach`, then continue.
 
-2. Call `mcp__android-debugger__list_devices`. If zero devices, tell the user to plug one in or start an emulator and stop. If many, you'll resolve the right one in step 4.
+2. Call `mcp__android-debugger__list_devices`. If zero devices, tell the user to plug one in or start an emulator and stop. If many, defer device-resolution to step 4 (where the target's `serial` is picked).
 
 3. Call `mcp__android-debugger__list_debuggable_processes`. If `serial` is omitted and there's only one device, it's auto-selected. Multiple devices → the tool returns `code: invalid_target` with a candidate list — ask the user via `AskUserQuestion` and retry with the chosen serial.
 
@@ -39,7 +39,7 @@ The user has a debuggable APK on a device/emulator and wants Claude driving the 
 
 ## Cross-platform notes
 
-- `adb` resolution lives in the server (`AdbLocator`). Don't shell out to adb from this skill.
+- `adb` resolution lives in the MCP server (env-var → `ANDROID_HOME` → PATH order). Don't shell out to `adb` from this skill — `server_info` reports the resolved path.
 - Bash blocks (if any) must work on macOS / Linux / Windows: no `mktemp`, `readlink -f`, GNU `realpath`, `sed -i ''`, `stat -c`, `/dev/stdin`.
 
 ## What you do NOT do

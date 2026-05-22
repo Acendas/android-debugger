@@ -1,75 +1,81 @@
 ---
 name: ad-trace
-description: Trace an Android code path via logpoint sweep.
-argument-hint: "<symptom or call site to trace>"
-allowed-tools: Read, Grep, Glob, mcp__android-debugger__connection_status, mcp__android-debugger__add_line_breakpoint, mcp__android-debugger__list_breakpoints, mcp__android-debugger__remove_breakpoint, mcp__android-debugger__tail_logcat, mcp__android-debugger__read_logcat, mcp__android-debugger__stop_logcat
+description: Trace an Android code path via logpoint plan sweep.
+model: opus
 ---
 
-# Trace — instrument-and-reproduce, no breakpoint pause
+# Trace — author a Debug Plan that sweeps logpoints across a call graph
 
-Some bugs don't need stepping — they need to know "what got called, in what order, with what values." Logpoints are non-suspending breakpoints that emit a rendered log line and immediately resume. Drop a handful across a suspect call graph, run the failing path, read the timeline.
+Some bugs don't need stepping — they need to know "what got called, in what order, with what values." Author a Debug Plan whose setup is a batch of non-suspending logpoints across the suspect call graph, whose `on_event` immediately resumes (so the VM never blocks), and whose harvest is the merged logpoint timeline.
 
-This is the highest-leverage workflow for ordering bugs, race conditions, and "I don't know where this value comes from" symptoms.
+## When to use
 
-## What you do
+The user described an ordering bug, race, or "I don't know where this value comes from" symptom in a known Android app. They have a seed location or symptom (e.g., "login flow", "MyVm.uiState").
 
-1. Call `mcp__android-debugger__connection_status`. Must be attached.
+## Preflight
 
-2. **Identify the suspect call graph.** The argument is a symptom or seed location — e.g., "login flow" or "MyVm.uiState". Use Read/Grep on the user's project (NOT decompiled bytecode) to find:
-   - The entry point (e.g., the click handler, lifecycle method, network callback).
-   - Methods that READ the suspect value.
-   - Methods that WRITE the suspect value.
-   - Aim for 5–10 instrumentation points across the call graph. More than 12 is noise.
+1. Call `connection_status`. Must be attached.
+2. **Identify 5–10 instrumentation points** across the suspect call graph by reading the user's project sources (Read/Grep). Aim for the entry, the readers, and the writers of the suspect value.
+3. **Reactive recognition check.** Read `skills/ad-trace/references/reactive-codepaths.md`. If the codepath is Flow/StateFlow/Compose/suspend, instrument `emit` / `collect` / `derivedStateOf` / `LaunchedEffect` / suspending call sites — *not* "writers" and "readers". Otherwise use imperative writer/reader instrumentation.
+4. **Confirm the batch** with one `AskUserQuestion` listing the proposed `(file:line)` or `(class.method)` set, one line per entry.
 
-2.5. **Check whether the codepath is reactive before placing logpoints.** Modern Kotlin Android moves values through Flow operators, Compose recomposition, and suspend continuations — not method-call boundaries. Read `skills/ad-trace/references/reactive-codepaths.md` and apply the recognition checklist there. If the codepath matches a reactive pattern (Flow/StateFlow, Compose, suspend functions), follow the per-shape strategy in that file (logpoint at every `emit` and `collect`, at `derivedStateOf`/`LaunchedEffect`, at suspending call sites — *not* at "writers" and "readers"). If no reactive signals match, fall through to the imperative writer/reader strategy below.
+## Compose the plan
 
-3. **Confirm the BATCH** with one `AskUserQuestion` listing the proposed `(file:line)` set with a one-line label each. Do NOT ask per-logpoint — the user wants to confirm the recipe, not approve 10 things.
+Read `references/plan-template.json`. The template instruments three method-entry logpoints on one class — adapt to N entries by replicating the setup entries. For line-precise instrumentation, swap `method_entry_bp` for `line_bp` with `file` + `line`.
 
-4. **Place the logpoints.** For each `(file, line)`, call `mcp__android-debugger__add_line_breakpoint` with:
-   - `file: <relative path>`
-   - `line: <number>`
-   - `log_message: <template>` — use `{expr}` placeholders to inject local values. **Never call non-trivial methods in a `log_message` template — read fields, not methods.** Method calls run in the target VM and `toString()` chains, lazy getters, and `equals`/`hashCode` implementations can mutate state. Only field reads (`{user.id}`, `{state.name}`) and trivial getters that match Java/Kotlin property convention (`{list.size}`, `{string.length}`, `{collection.isEmpty}`) are safe. Avoid `{password.length()}` (method call) — use `{password.length}` (Kotlin property accessor; resolves to the field). Custom `toString`, computed properties, and fluent builders are out of scope.
+Substitute:
 
-5. **Start logcat tail** (if not already running) via `mcp__android-debugger__tail_logcat` filtering on the app's package + tag `debugger:logpoint`. Save the `buffer_id`.
+- `<<PLAN_NAME>>` → e.g. `trace-login-flow`.
+- Each setup entry: fill `method_class` + `method_name` (or `file` + `line`) + `log_message`. **Templates use `{expr}` for local interpolation; field reads only — never call non-trivial methods** (`{user.id}` ok; `{password.length()}` not — use Kotlin property `{password.length}`).
+- `<<TIMEOUT_MS>>` → wall-clock budget. Default `120000` for an interactive repro; raise for slow flows.
+- `<<MAX_EVENTS>>` → cap on logpoint hits. Default `200`; raise for hot paths and accept truncation.
 
-6. **Tell the user to reproduce** the symptom. "Run the failing flow now. I'll harvest the timeline when you say go."
+The `on_event` block matches the breakpoint hits and immediately resumes — logpoints are non-suspending. Keep no hypotheses by default; the timeline IS the harvest.
 
-7. **Wait for the user's signal** — they'll tell you they triggered it. (You can also poll `read_logcat` with a short interval.)
+Validate before launching:
 
-8. **Harvest** via `mcp__android-debugger__read_logcat({ buffer_id })`. **If `read_logcat` returns 0 logpoint entries** after the user reports a successful repro, conclude the breakpoint set didn't intersect the actual codepath — broaden the suspect graph (try the reactive recognition again if you skipped it; the path may have gone through a Flow operator), or confirm the repro by running `/android-debugger:ad-explain` if the VM happened to pause at a non-logpoint event. Don't silently re-prompt the user to "try again" — empty logs are a meaningful signal that the recipe is wrong, not that the user mis-reproduced.
+```
+validate_plan(plan: <composed plan>)
+```
 
-   Render the timeline as a numbered list with timestamps:
+Fix returned errors and re-validate.
 
-   ```
-   01  T+0ms     login.click user=u_42 pwLen=8
-   02  T+12ms    AuthRepo.signIn called user=u_42
-   03  T+340ms   AuthRepo.signIn returned ok=false err=NetworkError
-   04  T+341ms   LoginVm._uiState <- Failure(NetworkError)
-   ...
-   ```
+## Launch + monitor
 
-9. **Reason over the timeline.** Flag:
-   - Order surprises ("event 03 happened before 02 — that's weird").
-   - Missing entries ("expected `AuthRepo.signOut` between 02 and 03 but didn't see it").
-   - Repeated invocations ("step 04 ran 3 times — possible recomposition / leaked observer").
+```
+run_debug_plan(plan: <validated plan>)
+```
 
-10. **Propose** the hypothesis + suggested next move (drill in with `:explain` at a specific bp, narrow the timeline with a conditional logpoint, or fix the obvious thing).
+Capture `plan_id`. Tell the user: "Logpoints armed. Reproduce the symptom now — I'll harvest the timeline when you say go."
 
-10a. **Conditional logpoints for narrowing.** If the first sweep produced too much noise, re-place the noisiest logpoints with a `condition:` clause so they only fire under the failing predicate. The `condition` gate is checked BEFORE the log render — buffer stays clean. Example: change `add_line_breakpoint({ file, line, log_message: "..." })` to `add_line_breakpoint({ file, line, condition: "result.success = false", log_message: "..." })` to keep only the failing-case entries. Gates apply uniformly — `hit_count: 10` + `log_message` also works (log every 10th hit) for sampling hot paths.
+Then loop:
 
-11. **Cleanup.** Ask the user if they want to keep the logpoints (for further runs) or remove them. On confirm, call `remove_breakpoint` for each id from `list_breakpoints`. Stop the logcat buffer with `stop_logcat`.
+```
+wait_for_event(timeout_ms: 60000, types: ["plan_progress"])
+```
 
-## Anti-hallucination rules
+Per event subtype:
 
-Read `skills/ad-explain/references/anti-hallucination.md` and follow the snapshot-grounding + evaluate-safety rules there. Apply them especially when reasoning over the harvested timeline — never claim a value appears in the timeline that doesn't, never claim a logpoint fired N times when the count is something else.
+- `event_handled` — note the log line in your narrative buffer.
+- `completed` — terminal. Read the final report's `logpoints[]` and render the timeline as a numbered list with timestamps. Flag ordering surprises, missing entries, and repeated invocations.
+- `aborted` / `timeout` — read the partial report; surface the captured timeline even if incomplete.
 
-## What you do NOT do
+## After terminal
 
-- Do not place logpoints inside framework code (java.*, android.*, kotlin.*) — too noisy. Stick to the user's project sources.
-- Do not use suspending breakpoints when a logpoint will do — pause-on-every-hit destroys the timing the user is trying to understand.
-- Do not write huge `log_message` templates. 1–4 placeholders max.
-- Do not chase obvious ordering anomalies before the user asks — surface them, let them direct the next move.
+Reason over the timeline:
 
-## Cross-platform notes
+- "Event 03 happened before 02 — that's unexpected."
+- "Expected `AuthRepo.signOut` between 02 and 03 but didn't see it."
+- "Step 04 ran 3 times — possible recomposition or leaked observer."
 
-All work routes through MCP tools — no shell commands needed. Skill is fully portable.
+**If the report's `logpoints[]` is empty** after a successful repro, the setup didn't intersect the actual codepath. Re-do reactive recognition (the path may have gone through a Flow operator), or broaden the suspect graph. Don't silently re-prompt the user to "try again" — empty logs are a meaningful negative signal.
+
+**Conditional narrowing.** If the first sweep was too noisy, re-author the plan with `condition` on the noisiest logpoints (e.g., `condition: "result.success = false"`) so only the failing-case entries render. Submit the narrower plan as a fresh `run_debug_plan`.
+
+## When to drop to interactive
+
+Almost never. The trace pattern is purely observational. Drop to interactive only if the user explicitly asks to drill into a specific captured event with `eval_method` or step semantics — and even then, prefer `abort_plan` → re-author a `:catch`-shaped plan over `pause_plan`.
+
+## Anti-hallucination
+
+Read `skills/ad-explain/references/anti-hallucination.md`. Never claim a value appears in the timeline that doesn't. Never claim a logpoint fired N times when the count is something else. Quote actual `logpoints[]` entries from the report.

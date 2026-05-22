@@ -100,7 +100,11 @@ object SessionPersistence {
         val dir = sessionsDir() ?: return null
         return runCatching {
             Files.createDirectories(dir)
-            val savedBreakpoints = breakpoints.map { it.toSaved() }
+            // v1.7: plan-owned breakpoints (planId != null) are scoped to a single
+            // Debug Plan run and torn down on plan completion / abort / yield (or by
+            // detach, which ends the plan). They are intentionally NOT persisted across
+            // detach — a fresh attach starts with a clean plan slate.
+            val savedBreakpoints = breakpoints.filter { it.planId == null }.map { it.toSaved() }
             val savedWatches = watches.map { (id, expr) -> SavedWatch(id, expr) }
             val payload = SavedSession(
                 savedAt = Instant.now().toString(),

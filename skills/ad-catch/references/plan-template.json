@@ -1,0 +1,35 @@
+{
+  "name": "<<PLAN_NAME>>",
+  "version": 1,
+  "timeout_ms": 60000,
+  "max_events": 5,
+  "setup": [
+    {
+      "kind": "exception_bp",
+      "class_pattern": "<<EXCEPTION_FQN>>",
+      "caught": false,
+      "uncaught": true
+    }
+  ],
+  "hypotheses": [
+    {
+      "name": "exception_has_message",
+      "when": "event.kind = 'exception'",
+      "expect": "event.exception_class != null"
+    }
+  ],
+  "on_event": [
+    {
+      "match": "event.kind = 'exception'",
+      "actions": [
+        { "kind": "snapshot", "depth": 8 },
+        { "kind": "feel", "feel": "event.exception_class", "as": "exception_class" },
+        { "kind": "feel", "feel": "event.location", "as": "throw_location" },
+        { "kind": "feel", "feel": "event.thread_id", "as": "thread_id" },
+        { "kind": "log", "log": "Exception captured at throw site" },
+        { "kind": "resume", "resume": true }
+      ]
+    }
+  ],
+  "harvest": ["snapshots", "feel_outputs", "hypotheses"]
+}

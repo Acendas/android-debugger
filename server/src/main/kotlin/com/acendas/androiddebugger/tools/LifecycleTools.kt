@@ -45,7 +45,7 @@ object LifecycleTools {
             inputSchema = ToolSchema(),
             toolAnnotations = ToolAnnotations(readOnlyHint = true, openWorldHint = false),
         ) {
-            runTool {
+            runTool(allowsDuringPlan = true, toolName = "connection_status") {
                 val attached = Session.vm != null
                 toolOk {
                     put("attached", attached)
@@ -312,7 +312,10 @@ object LifecycleTools {
             ),
             toolAnnotations = ToolAnnotations(readOnlyHint = false, openWorldHint = true),
         ) { request ->
-            runTool {
+            // v1.7.1 (M2): hard 30s ceiling on the entire attach flow (adb forward +
+            // dumpsys + JDI socket-attach + capability probe). JdiAttacher has its own
+            // 10s ceiling on the JDWP handshake; this outer budget bounds the rest.
+            runTool(toolName = "attach", wallClockMs = 30_000L) {
                 if (Session.vm != null) {
                     throw ToolError(
                         errorCode = ErrorCode.AlreadyAttached,
@@ -345,6 +348,14 @@ object LifecycleTools {
 
                 val vm = try {
                     JdiAttacher.attach("localhost", port)
+                } catch (te: ToolError) {
+                    // v1.7.1 (M2): JdiAttacher already throws ToolError with a precise
+                    // code (e.g. AttachTimeout). Release the adb forward we set up
+                    // upstream so a failed attach doesn't leak a forward, then re-throw
+                    // preserving the original structured error.
+                    Session.adb.removeForward(resolvedSerial, port)
+                    Session.state = SessionState.UNATTACHED
+                    throw te
                 } catch (t: Throwable) {
                     Session.adb.removeForward(resolvedSerial, port)
                     Session.state = SessionState.UNATTACHED
@@ -591,7 +602,7 @@ object LifecycleTools {
             ),
             toolAnnotations = ToolAnnotations(readOnlyHint = true, openWorldHint = true),
         ) { request ->
-            runTool {
+            runTool(allowsDuringPlan = true, toolName = "list_debuggable_processes") {
                 val serialArg = (request.arguments?.get("serial") as? JsonPrimitive)?.contentOrNull
                 val includeSystem = (request.arguments?.get("include_system") as? JsonPrimitive)?.booleanOrNull ?: false
 
@@ -636,7 +647,7 @@ object LifecycleTools {
             inputSchema = ToolSchema(),
             toolAnnotations = ToolAnnotations(readOnlyHint = true, openWorldHint = true),
         ) {
-            runTool {
+            runTool(allowsDuringPlan = true, toolName = "list_devices") {
                 val devices = Session.adb.listDevices()
                 toolOk {
                     put("devices", buildJsonArray {

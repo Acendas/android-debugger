@@ -1,0 +1,37 @@
+{
+  "name": "<<PLAN_NAME>>",
+  "version": 1,
+  "timeout_ms": 90000,
+  "max_events": 10,
+  "setup": [
+    {
+      "kind": "class_load_bp",
+      "class_pattern": "<<TEST_FQN>>"
+    },
+    {
+      "kind": "line_bp",
+      "file": "<<ASSERT_FILE>>",
+      "line": "<<ASSERT_LINE>>"
+    }
+  ],
+  "hypotheses": [
+    {
+      "name": "suspect_local_diverges",
+      "when": "event.kind = 'breakpoint'",
+      "expect": "frame.locals['<<SUSPECT_LOCAL>>'] != null"
+    }
+  ],
+  "on_event": [
+    {
+      "match": "event.kind = 'breakpoint'",
+      "actions": [
+        { "kind": "snapshot", "depth": 6 },
+        { "kind": "feel", "feel": "frame.locals['<<SUSPECT_LOCAL>>']", "as": "<<SUSPECT_LOCAL>>" },
+        { "kind": "feel", "feel": "frame.method", "as": "assert_method" },
+        { "kind": "feel", "feel": "dbg.elapsed_ms()", "as": "elapsed_ms" },
+        { "kind": "resume", "resume": true }
+      ]
+    }
+  ],
+  "harvest": ["snapshots", "feel_outputs", "hypotheses"]
+}
