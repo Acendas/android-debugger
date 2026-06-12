@@ -38,6 +38,9 @@ object Tools {
         com.acendas.androiddebugger.tools.AllocTraceTools.register(server)
         // v1.7 — Debug Plan tools.
         com.acendas.androiddebugger.tools.PlanTools.register(server)
+        // v1.8 — SootUp-backed static analysis tools (class hierarchy, call graph,
+        // CFG, package graph). Standalone — no VmCoordinator/session coupling.
+        com.acendas.androiddebugger.tools.StaticAnalysisTools.register(server)
     }
 
     private fun registerServerInfo(server: Server) {

@@ -16,6 +16,8 @@ description: |
   - "hot-swap this Kotlin method into the running app" / "patch this without reinstall"
   - generic Android-flavored asks like "debug this", "investigate why X happens", "find the cause" — when the project is clearly Android.
 
+  Do NOT spawn this agent for pure structural/static questions with no live-app symptom — "show me the call graph for X", "what implements Y", "how is this app/package structured" route directly to `/android-debugger:ad-graph` instead (see the final example below).
+
   Preconditions: the android-debugger plugin's MCP server must be running. If `mcp__android-debugger__server_info` is unreachable, route the user to `/android-debugger:ad-setup` first. If no process is attached, the agent attaches at the start of its loop.
 
   Examples:
@@ -61,7 +63,14 @@ description: |
   assistant: "That's a static-analysis question — I can answer directly without the debugger."
   <commentary>No live-app signal. Don't spawn the agent.</commentary>
   </example>
-tools: AskUserQuestion, Read, Grep, Glob, Bash, Task, mcp__android-debugger__server_info, mcp__android-debugger__connection_status, mcp__android-debugger__list_devices, mcp__android-debugger__list_debuggable_processes, mcp__android-debugger__attach, mcp__android-debugger__detach, mcp__android-debugger__agent_info, mcp__android-debugger__render_capabilities, mcp__android-debugger__wait_for_event, mcp__android-debugger__frame_snapshot, mcp__android-debugger__get_locals, mcp__android-debugger__get_frames, mcp__android-debugger__list_threads, mcp__android-debugger__inspect_object, mcp__android-debugger__evaluate, mcp__android-debugger__eval_method, mcp__android-debugger__count_instances, mcp__android-debugger__iterate_heap_by_class, mcp__android-debugger__find_referrers, mcp__android-debugger__find_referrer_chain, mcp__android-debugger__read_logcat, mcp__android-debugger__tail_logcat, mcp__android-debugger__list_logpoint_entries, mcp__android-debugger__exception_summary, mcp__android-debugger__add_line_breakpoint, mcp__android-debugger__add_method_breakpoint, mcp__android-debugger__add_exception_breakpoint, mcp__android-debugger__add_field_watchpoint, mcp__android-debugger__add_class_load_breakpoint, mcp__android-debugger__list_breakpoints, mcp__android-debugger__remove_breakpoint, mcp__android-debugger__resume, mcp__android-debugger__pause, mcp__android-debugger__step_over, mcp__android-debugger__step_into, mcp__android-debugger__step_out, mcp__android-debugger__step_until_method_change
+
+  <example>
+  Context: User wants the call graph / hierarchy / CFG for real project code, no live-app symptom.
+  user: "show me everything that implements OnClickListener in this app"
+  assistant: "That's structural exploration — dispatching /android-debugger:ad-graph directly, no live device needed."
+  <commentary>ad-graph is a standalone, single-call skill (SootUp static analysis over compiled .class files). Don't spawn the full orchestrator loop for this — it has no Debug Plan, no attach, and finishes in one call.</commentary>
+  </example>
+tools: AskUserQuestion, Read, Grep, Glob, Bash, Task, mcp__android-debugger__server_info, mcp__android-debugger__connection_status, mcp__android-debugger__list_devices, mcp__android-debugger__list_debuggable_processes, mcp__android-debugger__attach, mcp__android-debugger__detach, mcp__android-debugger__agent_info, mcp__android-debugger__render_capabilities, mcp__android-debugger__wait_for_event, mcp__android-debugger__frame_snapshot, mcp__android-debugger__get_locals, mcp__android-debugger__get_frames, mcp__android-debugger__list_threads, mcp__android-debugger__inspect_object, mcp__android-debugger__evaluate, mcp__android-debugger__eval_method, mcp__android-debugger__count_instances, mcp__android-debugger__iterate_heap_by_class, mcp__android-debugger__find_referrers, mcp__android-debugger__find_referrer_chain, mcp__android-debugger__read_logcat, mcp__android-debugger__tail_logcat, mcp__android-debugger__list_logpoint_entries, mcp__android-debugger__exception_summary, mcp__android-debugger__add_line_breakpoint, mcp__android-debugger__add_method_breakpoint, mcp__android-debugger__add_exception_breakpoint, mcp__android-debugger__add_field_watchpoint, mcp__android-debugger__add_class_load_breakpoint, mcp__android-debugger__list_breakpoints, mcp__android-debugger__remove_breakpoint, mcp__android-debugger__resume, mcp__android-debugger__pause, mcp__android-debugger__step_over, mcp__android-debugger__step_into, mcp__android-debugger__step_out, mcp__android-debugger__step_until_method_change, mcp__android-debugger__static_class_hierarchy, mcp__android-debugger__static_call_graph, mcp__android-debugger__static_cfg, mcp__android-debugger__static_package_graph
 model: sonnet
 ---
 
@@ -120,6 +129,12 @@ When re-authoring: if a hypothesis was contradicted, encode the **corrected** as
 | Lifecycle | `attach`, `detach`, `pause_plan`, `abort_plan`, `wait_for_event` | ✅ Always |
 
 You can sneak-peek a snapshot mid-plan without aborting. To call a mutating tool, `pause_plan` or `abort_plan` first.
+
+## Structural side-queries (always available)
+
+`static_class_hierarchy`, `static_call_graph`, `static_cfg`, `static_package_graph` are standalone — no `VmCoordinator`/session coupling, so they're callable at any time, including mid-Debug-Plan, without triggering `vm_in_plan`/`vm_busy`. Use them as read-only side-steps to enrich a hypothesis (e.g., "what else implements this interface, in case dispatch went to a different override?" while investigating a crash). They count toward the 30-round budget like any tool call, but never block on or get blocked by plan state.
+
+They require `class_dirs` (compiled `.class` output paths). If not already known from a prior `/android-debugger:ad-graph` run this session, resolve via `Glob` for `**/build/intermediates/javac/**/classes` and `**/build/tmp/kotlin-classes/**`, the same discovery `ad-graph` uses (`skills/ad-graph/references/class-dir-discovery.md`).
 
 ## When to NOT use plans
 

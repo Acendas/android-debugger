@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "com.acendas.androiddebugger"
-version = "1.7.2"
+version = "1.8.0"
 
 repositories {
     mavenCentral()
@@ -51,6 +51,17 @@ dependencies {
 
     // JDI is bundled with the JDK at com.sun.jdi — no extra dependency needed.
     // It's added to the classpath via tools/lib in older JDKs; on JDK 9+ it lives in jdk.jdi module.
+
+    // v1.8 — SootUp 2.0.0: JVM-bytecode static analysis backing the `static_*` tools
+    // (class hierarchy, call graph, CFG, package graph). NOTE: sootup.callgraph is
+    // deliberately NOT added — static_call_graph is implemented via Jimple
+    // body-scanning (see staticanalysis/GraphExtractors.kt), which doesn't need
+    // ClassHierarchyAnalysisAlgorithm's whole-program worklist. Re-add only if/when a
+    // whole-program mode is built. SootUp is LGPL — do not relocate these packages in
+    // shadowJar (see checkJarSize comment + docs/android-debugger-dev.md follow-up).
+    implementation("org.soot-oss:sootup.core:2.0.0")
+    implementation("org.soot-oss:sootup.java.core:2.0.0")
+    implementation("org.soot-oss:sootup.java.bytecode.frontend:2.0.0")
 
     testImplementation(kotlin("test"))
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
@@ -197,9 +208,13 @@ tasks.register("checkAgents") {
 //   pre-v1.4: 10 MB
 //   v1.4:     20 MB (absorbs the agent .so files ~660 KB + headroom)
 //   v1.5:     25 MB (embeds r8/d8 for HotSwap dexing pipeline, +~8 MB)
+//   v1.8:     32 MB (SootUp 2.0.0 + transitives — guava, jgrapht-core, commons-lang3/io,
+//             gson — for the static_* analysis tools, +~7 MB)
 // r8 internals are heavily obfuscated/repackaged; selective exclusion risks breaking d8,
-// so we raise the cap rather than trim the dependency.
-val maxFatJarBytes: Long = 25L * 1024L * 1024L // 25 MB
+// so we raise the cap rather than trim the dependency. SootUp is LGPL — per the v1.8
+// plan we don't relocate its packages either (relinking concern), so its size lands
+// in the fat jar as-is too.
+val maxFatJarBytes: Long = 32L * 1024L * 1024L // 32 MB
 
 tasks.register("checkJarSize") {
     description = "Fail the build if the shaded fat jar exceeds the configured size cap."

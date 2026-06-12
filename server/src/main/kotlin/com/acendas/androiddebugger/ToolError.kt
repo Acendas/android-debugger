@@ -59,6 +59,21 @@ enum class ErrorCode(val code: String) {
      */
     AttachTimeout("attach_timeout"),
     Internal("internal"),
+
+    /** v1.8: `static_class_hierarchy` target_class not present in the SootUp view. */
+    ClassNotFound("class_not_found"),
+    /** v1.8: `static_call_graph`/`static_cfg` target_method not present in the SootUp view. */
+    MethodNotFound("method_not_found"),
+    /**
+     * v1.8: `target_method` resolved to multiple overloads and no `params` was given to
+     * disambiguate. The error payload carries a `candidates` array of canonical
+     * signatures so the caller can retry with a specific one.
+     */
+    MethodAmbiguous("method_ambiguous"),
+    /** v1.8: SootUp `JavaView`/scene construction failed (bad classpath entry, etc.). */
+    SceneBuildFailed("scene_build_failed"),
+    /** v1.8: `class_dirs` was empty or none of the given paths exist. */
+    ClassDirsEmptyOrMissing("class_dirs_empty_or_missing"),
 }
 
 /**
@@ -83,11 +98,12 @@ inline fun toolOk(block: JsonObjectBuilder.() -> Unit = {}): CallToolResult {
 }
 
 /** Build an `ok: false` MCP reply with a structured error code. Per Task 0.1.5.3. */
-fun toolErr(
+inline fun toolErr(
     code: ErrorCode,
     message: String,
     hint: String? = null,
     currentState: String? = null,
+    extra: JsonObjectBuilder.() -> Unit = {},
 ): CallToolResult {
     val payload = buildJsonObject {
         put("ok", false)
@@ -95,6 +111,7 @@ fun toolErr(
         put("message", message)
         if (hint != null) put("hint", hint)
         if (currentState != null) put("current_state", currentState)
+        extra()
     }
     return CallToolResult(content = listOf(TextContent(text = payload.toString())))
 }

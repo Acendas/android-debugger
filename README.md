@@ -280,6 +280,7 @@ Disposes the JDI VM, releases the adb forward, drains JVMTI ref tables, persists
 | `:patch-revert` | Roll back a HotSwap | Patch didn't work |
 | `:patch-status` | Current HotSwap state | "What did we patch?" |
 | `:investigate` | Top-level orchestrator — triage + dispatch | Catch-all "debug this for me" |
+| `:graph` | Class hierarchy / call graph / CFG / package graph (SootUp, no attach) | "What implements X?", "Call graph of Y" |
 
 ## Architecture
 
@@ -306,9 +307,9 @@ A Kotlin MCP server + a native JVMTI agent + a small set of workflow skills. No 
 
 - **JDI client** — Oracle's Java Debug Interface over JDWP. Read surface (frames, locals, fields), narrow write surface (`setLocal`, `setField`, `invokeMethod`), event stream.
 - **JVMTI agent** — small C++ binary loaded INTO the app process via `cmd activity attach-agent`. Unlocks what JDWP can't do on ART: `RedefineClasses` for HotSwap, `IterateThroughHeap` for fast walks, line-rate method+allocation events. Three ABIs pre-built: arm64-v8a, x86_64, armeabi-v7a.
-- **MCP tool surface** — ~50 tools, snake_case `<area>_<verb>`, all return `{ ok, ... }` or `{ ok: false, code, message, hint }`. The agent reasons over JSON, not stack traces.
+- **MCP tool surface** — ~54 tools, snake_case `<area>_<verb>`, all return `{ ok, ... }` or `{ ok: false, code, message, hint }`. The agent reasons over JSON, not stack traces.
 
-### Skills (13)
+### Skills (14)
 
 Each `/android-debugger:*` command is a [skill](https://docs.anthropic.com/en/docs/claude-code/skills) with imperative-form body. Skill bodies are written for the *agent*, not for human readers — that's the consumer model.
 
@@ -397,6 +398,16 @@ The plugin runs anywhere Claude Code runs. Server is JVM/Kotlin — runs on macO
 - `render_capabilities` — human-readable capability map
 - `framework_frame_filter` — drop framework frames (`android.*`, `kotlin.*`, `java.*`) from a frame list
 
+### Static analysis (SootUp, attach-free)
+
+- `static_class_hierarchy` — superclasses/interfaces (`up`), subtypes/implementers (`down`), or both, BFS-bounded by `depth`/`node_cap`
+- `static_call_graph` — callers and/or callees of a method via Jimple body-scanning; virtual/interface dispatch expands to concrete overrides up to `max_dispatch_targets` (default 5)
+- `static_cfg` — per-method control-flow graph, one node per basic block, branch (`true`/`false`) and exceptional (`catch <Type>`) edges
+- `static_package_graph` — package-level dependency graph aggregated from cross-package type references
+- No `attach`/live device required — analyzes compiled `.class` output directly. Kotlin-synthetic classes (companions, lambdas, `DefaultImpls`, coroutine continuations) collapse into their enclosing class by default (`collapse_synthetic: true`)
+- Every response returns agent-facing `nodes`/`edges`/`truncated`/`warnings` plus rendered `ascii` (terminal) and `mermaid` (for docs)
+- `/android-debugger:ad-graph` skill resolves `class_dirs` across Gradle modules, `android_api_level`, and a confirm-then-write Mermaid-persistence flow
+
 ### Expression evaluation
 
 - `evaluate` — DMN-FEEL expressions over paused-frame state. Binary ops, `if/then/else`, `instance of`, list comprehensions, ranges, three-valued null logic. Property access on pre-resolved object trees (depth 3 by default). String literals: single quotes.
@@ -462,7 +473,7 @@ The plugin runs anywhere Claude Code runs. Server is JVM/Kotlin — runs on macO
 
 ### Workflow skills
 
-13 skills covering the canonical debug loops: `:setup`, `:attach`, `:detach`, `:status`, `:explain`, `:catch`, `:trace`, `:walk`, `:bisect-flaky`, `:patch`, `:patch-revert`, `:patch-status`, `:investigate`. See [All Skills](#all-skills) above.
+14 skills covering the canonical debug loops: `:setup`, `:attach`, `:detach`, `:status`, `:explain`, `:catch`, `:trace`, `:walk`, `:bisect-flaky`, `:patch`, `:patch-revert`, `:patch-status`, `:investigate`, `:graph`. See [All Skills](#all-skills) above.
 
 ### Autonomous orchestrator
 
@@ -511,6 +522,7 @@ The fat jar and agent `.so` files are committed to the repo so users don't need 
 - **[ca.acendas:kfeel](https://github.com/Acendas/kfeel)** — Kotlin DMN 1.3 FEEL implementation, powers `evaluate`. Bundled in the fat jar.
 - **`com.android.tools:r8:8.7.18`** — d8 dexer for HotSwap. Bundled in the fat jar.
 - **ASM 9.x** — bytecode shape diff for HotSwap pre-validate. Bundled.
+- **[SootUp 2.0.0](https://soot-oss.github.io/SootUp/)** (`sootup.core`, `sootup.java.core`, `sootup.java.bytecode.frontend`) — bytecode analysis powering `static_*` tools. Bundled, not relocated (LGPL).
 - **JDI** — `jdk.jdi` module, included with JDK 17+.
 
 ## Contributing

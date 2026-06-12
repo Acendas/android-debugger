@@ -1,7 +1,7 @@
 {
   "name": "android-debugger",
-  "version": "2.1.1",
-  "description": "AI-agent-driven Android debugger — exposes JDI/JDWP and a JVMTI agent as MCP tools for Claude Code to drive. v1.7 ships Debug Plans: the agent authors a Plan declaring setup breakpoints, on_event handlers with actions (snapshot, FEEL expressions, eval_method, resume/step, yield_when, abort_when, log, set_var), hypotheses graded matched/contradicted/inconclusive, and a streaming plan_progress event feed. New MCP tools: run_debug_plan, pause_plan, abort_plan, validate_plan, list/save/load/delete_plan. New dbg.* FEEL namespace (instance_count, is_reachable, thread_state, frame_count, has_capability, elapsed_ms, logcat_since). Hybrid concurrency: read-only inspection passes through during a plan; mutating tools return vm_in_plan. Recipe skills /ad-catch /ad-trace /ad-walk /ad-bisect-flaky author plans; /ad-explain stays imperative; /ad-investigate dispatches templates and handles yield→abort→re-author. Plus everything from v1.0–v1.6: JVMTI deepening (native-speed heap walks count_instances / iterate_heap_by_class / find_referrers / find_referrer_chain auto-routing, line-rate method tracing with leaky-bucket throttling + arg + return-value capture, class-allowlisted allocation tracing, agent v3 JSON-RPC), HotSwap (hot_swap_class + hot_swap_classes + hot_swap_revert), the goal-driven /android-debugger:patch skill, breakpoints (line, conditional, hit-count, logpoint, exception, method, field, class-load), watches, step, FEEL expression evaluation (kfeel), eval_method with mutation refusal, frame snapshots, logcat, heap dump, session persistence, and the C++ JVMTI agent (3 ABIs). Cross-platform: macOS, Linux, Windows.",
+  "version": "2.2.0",
+  "description": "AI-agent-driven Android debugger — exposes JDI/JDWP and a JVMTI agent as MCP tools for Claude Code to drive. v1.8 adds standalone, attach-free static analysis backed by SootUp 2.0.0: static_class_hierarchy / static_call_graph / static_cfg / static_package_graph return agent-facing nodes/edges/truncated/warnings plus ASCII and Mermaid renderings, with BFS depth/node-cap bounds, virtual-dispatch-target capping, and Kotlin-synthetic collapse (companions, lambdas, DefaultImpls, coroutine continuations). New /android-debugger:ad-graph skill resolves class_dirs across Gradle modules and android_api_level, with a confirm-then-write Mermaid-persistence flow — routed as a 'Zeroth check' for pure structural questions ('what implements X', 'call graph of Y', 'class hierarchy of Z') ahead of the Debug-Plan shapes, and available mid-plan as a read-only side-query. v1.7 shipped Debug Plans: the agent authors a Plan declaring setup breakpoints, on_event handlers with actions (snapshot, FEEL expressions, eval_method, resume/step, yield_when, abort_when, log, set_var), hypotheses graded matched/contradicted/inconclusive, and a streaming plan_progress event feed. New MCP tools: run_debug_plan, pause_plan, abort_plan, validate_plan, list/save/load/delete_plan. New dbg.* FEEL namespace (instance_count, is_reachable, thread_state, frame_count, has_capability, elapsed_ms, logcat_since). Hybrid concurrency: read-only inspection passes through during a plan; mutating tools return vm_in_plan. Recipe skills /ad-catch /ad-trace /ad-walk /ad-bisect-flaky author plans; /ad-explain stays imperative; /ad-investigate dispatches templates and handles yield→abort→re-author. Plus everything from v1.0–v1.6: JVMTI deepening (native-speed heap walks count_instances / iterate_heap_by_class / find_referrers / find_referrer_chain auto-routing, line-rate method tracing with leaky-bucket throttling + arg + return-value capture, class-allowlisted allocation tracing, agent v3 JSON-RPC), HotSwap (hot_swap_class + hot_swap_classes + hot_swap_revert), the goal-driven /android-debugger:patch skill, breakpoints (line, conditional, hit-count, logpoint, exception, method, field, class-load), watches, step, FEEL expression evaluation (kfeel), eval_method with mutation refusal, frame snapshots, logcat, heap dump, session persistence, and the C++ JVMTI agent (3 ABIs). Cross-platform: macOS, Linux, Windows.",
   "author": {
     "name": "Acendas",
     "email": "info@acendas.ca"
@@ -47,6 +47,13 @@
     "hypothesis-grading",
     "plan-dsl",
     "anchored-speculation",
+    "static-analysis",
+    "sootup",
+    "call-graph",
+    "class-hierarchy",
+    "control-flow-graph",
+    "package-graph",
+    "ad-graph",
     "acendas"
   ],
   "tags": [
@@ -84,6 +91,13 @@
     "alloc-trace",
     "referrer-chain",
     "leak-hunting",
+    "static-analysis",
+    "sootup",
+    "call-graph",
+    "class-hierarchy",
+    "control-flow-graph",
+    "package-graph",
+    "mermaid",
     "mcp-server",
     "cross-platform"
   ]

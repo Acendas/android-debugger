@@ -4,6 +4,16 @@ Single source of truth for shape classification. Read this from `/android-debugg
 
 The four shapes are exhaustive in practice: every Android debugging request the team has seen falls into one of them. A request that genuinely doesn't match any shape is almost always a request that doesn't need a debugger (e.g., "rename a variable", "review my code") — push back and ask the user to restate the *runtime* problem.
 
+## Zeroth check — structural/static questions (route before the four shapes)
+
+Some requests aren't about *runtime behavior* — they're about code *shape*: "show me the call graph for X", "what implements OnClickListener", "what calls LoginActivity.onCreate", "how is this package organized", "class hierarchy of Foo". These route directly to `/android-debugger:ad-graph` — a standalone SootUp-backed static-analysis skill that needs no attach, no Debug Plan, and no live VM.
+
+This is not a fifth Debug-Plan shape (the four shapes above remain exhaustive for *dynamic* investigations) — `ad-graph` is an imperative single-call skill, the same category as `/android-debugger:ad-explain` and `/android-debugger:ad-status`.
+
+**Trigger phrases**: "show me the call graph", "what implements X", "what calls Y", "class hierarchy of X", "how is this app/package structured/organized", "control flow of method X".
+
+**Disambiguation**: "what calls Y" with no symptom → `ad-graph` (static). "what calls Y, because it's returning the wrong value" → Behavior shape (`ad-trace`) — the user has a runtime symptom and static structure alone won't answer it.
+
 ## The four shapes
 
 | Shape | Trigger words / shapes the user types | Routes to (interactive) | Routes to (autonomous loop name) |
