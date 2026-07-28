@@ -2,7 +2,7 @@
 name: ad-graph
 description: Generate static-analysis graphs as ASCII or Mermaid.
 model: sonnet
-allowed-tools: AskUserQuestion, Glob, Grep, Read, Write, Bash, mcp__android-debugger__connection_status, mcp__android-debugger__agent_info, mcp__android-debugger__get_app_info, mcp__android-debugger__static_class_hierarchy, mcp__android-debugger__static_call_graph, mcp__android-debugger__static_cfg, mcp__android-debugger__static_package_graph
+allowed-tools: AskUserQuestion, Glob, Grep, Read, Write, Bash, mcp__plugin_android-debugger_android-debugger__connection_status, mcp__plugin_android-debugger_android-debugger__agent_info, mcp__plugin_android-debugger_android-debugger__get_app_info, mcp__plugin_android-debugger_android-debugger__static_class_hierarchy, mcp__plugin_android-debugger_android-debugger__static_call_graph, mcp__plugin_android-debugger_android-debugger__static_cfg, mcp__plugin_android-debugger_android-debugger__static_package_graph
 ---
 
 # Graph — static-analysis graphs (class hierarchy, call graph, CFG, package graph)
@@ -38,7 +38,7 @@ If after globbing `class_dirs` is empty, don't call any tool yet — tell the us
 
 Improves resolution of `android.jar`-only types (framework superclasses, interfaces, etc.) but every tool works without it — an unresolved level just means more `warnings` about unresolved Android framework types.
 
-1. If a debugger session is currently attached (`mcp__android-debugger__connection_status` → `attached: true`), call `mcp__android-debugger__agent_info` or `mcp__android-debugger__get_app_info` and use the target/device SDK level it reports.
+1. If a debugger session is currently attached (`mcp__plugin_android-debugger_android-debugger__connection_status` → `attached: true`), call `mcp__plugin_android-debugger_android-debugger__agent_info` or `mcp__plugin_android-debugger_android-debugger__get_app_info` and use the target/device SDK level it reports.
 2. Otherwise, `Grep` the project's `build.gradle` / `build.gradle.kts` files for `compileSdk` or `targetSdkVersion` and use the highest value found across modules.
 3. If neither source yields a level, omit `android_api_level` entirely — don't guess a number.
 

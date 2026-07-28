@@ -18,7 +18,7 @@ Plans cut LLM round-trips per known-shape investigation from ~20 to ~3. Use them
 
 ## Step 1 — Preflight
 
-Call `mcp__android-debugger__connection_status`. If not attached, tell the user to run `/android-debugger:ad-attach` first and stop. Do not re-run preflight that a dispatching skill has already confirmed via the `[orchestrator note: session is attached…]` marker.
+Call `mcp__plugin_android-debugger_android-debugger__connection_status`. If not attached, tell the user to run `/android-debugger:ad-attach` first and stop. Do not re-run preflight that a dispatching skill has already confirmed via the `[orchestrator note: session is attached…]` marker.
 
 ## Step 2 — Goal-shape triage
 

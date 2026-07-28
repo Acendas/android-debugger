@@ -2,7 +2,7 @@
 name: ad-patch-status
 description: List classes hot-swapped in the current session.
 model: haiku
-allowed-tools: mcp__android-debugger__connection_status, mcp__android-debugger__agent_info
+allowed-tools: mcp__plugin_android-debugger_android-debugger__connection_status, mcp__plugin_android-debugger_android-debugger__agent_info
 ---
 
 # Patch-status — see what's been HotSwap'd this session
@@ -11,9 +11,9 @@ The user wants a quick "what's the current HotSwap state of this session?" reado
 
 ## What you do
 
-1. Call `mcp__android-debugger__connection_status`. If not attached, tell the user to attach first and stop.
+1. Call `mcp__plugin_android-debugger_android-debugger__connection_status`. If not attached, tell the user to attach first and stop.
 
-2. Call `mcp__android-debugger__agent_info`. Read:
+2. Call `mcp__plugin_android-debugger_android-debugger__agent_info`. Read:
    - `hot_swap_supported` — whether the device supports HotSwap at all.
    - `force_re_enter_supported` — whether `force_re_enter: true` is honored.
    - `minify_detected` — whether the build is minified (blocks HotSwap upfront).

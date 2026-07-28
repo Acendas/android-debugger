@@ -1,7 +1,7 @@
 ---
 name: ad-setup
 description: Verify Android debugger environment (JDK + adb).
-allowed-tools: Bash, mcp__android-debugger__server_info, mcp__android-debugger__list_devices
+allowed-tools: Bash, mcp__plugin_android-debugger_android-debugger__server_info, mcp__plugin_android-debugger_android-debugger__list_devices
 ---
 
 # Setup — environment probe + MCP smoke test
@@ -10,7 +10,7 @@ The first thing to run after install. Also the diagnostic to fall back to whenev
 
 ## What you do
 
-1. Call `mcp__android-debugger__server_info`. The response carries `jdk_version`, `os_name`, `adb_status`, and (on success) `adb_path`. Lead with this; it's the cheapest signal that the server jar runs at all.
+1. Call `mcp__plugin_android-debugger_android-debugger__server_info`. The response carries `jdk_version`, `os_name`, `adb_status`, and (on success) `adb_path`. Lead with this; it's the cheapest signal that the server jar runs at all.
 
 2. If the MCP tool errors (server unreachable / jar missing), surface the exact error and check the most likely causes — in this order:
    - **Server jar missing**: the plugin ships `dist/android-debugger-server.jar`. If install was incomplete, ask the user to reinstall the plugin.
@@ -19,7 +19,7 @@ The first thing to run after install. Also the diagnostic to fall back to whenev
 
 3. If `server_info` returns `adb_status: "not_found"`, do not silently proceed. Print the exact resolution the server tried (ADB_PATH → ANDROID_HOME → PATH) and give one platform-specific hint. Read `skills/ad-setup/references/install-hints.md` for the platform-specific install commands and `ANDROID_HOME` / `ADB_PATH` env-var guidance — surface only the hint relevant to the user's `os_name` (don't dump the whole reference). Same applies to JDK install hints if `jdk_version` is missing or below 17.
 
-4. If both server and adb are reachable, call `mcp__android-debugger__list_devices` to confirm at least one device or emulator is connected. Do **not** start an emulator on the user's behalf — they may have a specific AVD they want; just point them at how to start one if no devices are listed.
+4. If both server and adb are reachable, call `mcp__plugin_android-debugger_android-debugger__list_devices` to confirm at least one device or emulator is connected. Do **not** start an emulator on the user's behalf — they may have a specific AVD they want; just point them at how to start one if no devices are listed.
 
 5. Report back as a compact table:
 

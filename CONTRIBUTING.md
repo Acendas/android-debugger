@@ -44,6 +44,18 @@ cd android-debugger/server
 
 Tests cover the parsing helpers (`adb devices -l`, `adb shell ps -A`, etc.) and the `Adb` façade with a mock `CommandRunner`. JDI integration code is exercised by smoke tests against a real device, not unit tests — JDI types are too large to mock cleanly.
 
+## Check MCP tool names
+
+Device-free, no dependencies. Run it after touching `skills/`, `agents/`, `.mcp.json`, or `plugin.json`:
+
+```
+python3 android-debugger/tools/check_mcp_tool_names.py
+```
+
+It verifies that every skill and agent references tools as `mcp__plugin_android-debugger_android-debugger__<tool>` (Claude Code scopes a plugin's bundled MCP server by plugin name — the bare `mcp__android-debugger__<tool>` form names nothing), and that each referenced tool actually exists in the Kotlin source.
+
+The scoping half matters because the failure is silent: an `allowed-tools` entry that matches no real tool grants nothing and raises no error, so every call — read-only ones included — falls through to the permission classifier and gets blocked or prompts.
+
 ## Smoke the MCP server end-to-end
 
 Once the jar builds, the MCP server speaks JSON-RPC over stdio. Quick handshake:

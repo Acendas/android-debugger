@@ -3,7 +3,7 @@ name: ad-patch
 description: Hot-swap a method body into the running Android app.
 model: sonnet
 argument-hint: "<goal> verify_via: <success criterion>"
-allowed-tools: AskUserQuestion, Bash, Read, Edit, Glob, Grep, mcp__android-debugger__connection_status, mcp__android-debugger__agent_info, mcp__android-debugger__hot_swap_class, mcp__android-debugger__hot_swap_classes, mcp__android-debugger__hot_swap_revert, mcp__android-debugger__list_threads, mcp__android-debugger__frame_snapshot, mcp__android-debugger__wait_for_event, mcp__android-debugger__dump_view_hierarchy, mcp__android-debugger__get_current_activity
+allowed-tools: AskUserQuestion, Bash, Read, Edit, Glob, Grep, mcp__plugin_android-debugger_android-debugger__connection_status, mcp__plugin_android-debugger_android-debugger__agent_info, mcp__plugin_android-debugger_android-debugger__hot_swap_class, mcp__plugin_android-debugger_android-debugger__hot_swap_classes, mcp__plugin_android-debugger_android-debugger__hot_swap_revert, mcp__plugin_android-debugger_android-debugger__list_threads, mcp__plugin_android-debugger_android-debugger__frame_snapshot, mcp__plugin_android-debugger_android-debugger__wait_for_event, mcp__plugin_android-debugger_android-debugger__dump_view_hierarchy, mcp__plugin_android-debugger_android-debugger__get_current_activity
 ---
 
 # Patch — edit, hot-swap, verify
@@ -20,7 +20,7 @@ Two clauses, separated by `verify_via:`. Both are required. Refuse to enter the 
 
 ## What you do
 
-1. **Probe HotSwap support.** Call `mcp__android-debugger__connection_status`. If not attached, tell the user to run `/android-debugger:ad-attach` first and stop. Then call `mcp__android-debugger__agent_info`. Read these fields:
+1. **Probe HotSwap support.** Call `mcp__plugin_android-debugger_android-debugger__connection_status`. If not attached, tell the user to run `/android-debugger:ad-attach` first and stop. Then call `mcp__plugin_android-debugger_android-debugger__agent_info`. Read these fields:
    - `hot_swap_supported`: must be `true` to proceed.
    - `minify_detected`: if `true`, refuse with: "the attached build is minified; set `minifyEnabled=false` on the debug variant and rebuild."
    - `force_re_enter_supported`: gates the `force_re_enter` flag we use later. Note the value.
@@ -58,20 +58,20 @@ Two clauses, separated by `verify_via:`. Both are required. Refuse to enter the 
 
    Stdout is a JSON object with `changed: [{ fqn, class_path }, ...]`. Read each changed `.class` from disk and base64-encode for the swap call.
 
-8. **Swap.** If only one class changed, call `mcp__android-debugger__hot_swap_class`. If more than one (lambdas, inner classes), call `mcp__android-debugger__hot_swap_classes` with the batch. Pass `force_re_enter: true` IFF (a) `agent_info.force_re_enter_supported` was true AND (b) the response would otherwise show `active_frames_using_old_code` populated. A practical proxy: if the user paused the VM at a breakpoint, set `force_re_enter: true`; otherwise leave it false.
+8. **Swap.** If only one class changed, call `mcp__plugin_android-debugger_android-debugger__hot_swap_class`. If more than one (lambdas, inner classes), call `mcp__plugin_android-debugger_android-debugger__hot_swap_classes` with the batch. Pass `force_re_enter: true` IFF (a) `agent_info.force_re_enter_supported` was true AND (b) the response would otherwise show `active_frames_using_old_code` populated. A practical proxy: if the user paused the VM at a breakpoint, set `force_re_enter: true`; otherwise leave it false.
 
    On `code: redefine_unsupported_shape_change`, surface the `diff` array and stop — the user must restructure the change (e.g., move the new method to a different file, or add it via a different path that doesn't require redefinition).
 
    On `code: capability_unavailable` for `force_re_enter`, retry once with `force_re_enter: false` and note the caveat in the response.
 
 9. **Drive the verify clause.** Parse `verify_via:` into an action + expectation. Common patterns:
-   - "tap X and expect Y to be foreground" → use `mcp__android-debugger__dump_view_hierarchy` to find X, then `adb shell input tap` via Bash, then `mcp__android-debugger__get_current_activity` to confirm Y.
+   - "tap X and expect Y to be foreground" → use `mcp__plugin_android-debugger_android-debugger__dump_view_hierarchy` to find X, then `adb shell input tap` via Bash, then `mcp__plugin_android-debugger_android-debugger__get_current_activity` to confirm Y.
    - "set breakpoint on Z and observe variable W" → install the breakpoint, `wait_for_event`, `frame_snapshot`, check W.
    - "navigate to settings and expect Y visible" → use `dump_view_hierarchy` to read current screen, navigate via input events, re-dump.
 
    Report `verified: true` only when the expectation is observably satisfied. On failure, `verified: false` with the reason — the actual observation vs. the expected.
 
-10. **Offer revert on failure.** If `verified: false`, ask via `AskUserQuestion`: "Swap installed but verify failed — revert?" If yes, call `mcp__android-debugger__hot_swap_revert` (no args = revert every class swapped this session).
+10. **Offer revert on failure.** If `verified: false`, ask via `AskUserQuestion`: "Swap installed but verify failed — revert?" If yes, call `mcp__plugin_android-debugger_android-debugger__hot_swap_revert` (no args = revert every class swapped this session).
 
 ## Cross-platform notes
 

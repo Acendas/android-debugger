@@ -2,7 +2,7 @@
 name: ad-patch-revert
 description: Revert a previously hot-swapped Android class.
 argument-hint: "[FQN]"
-allowed-tools: AskUserQuestion, mcp__android-debugger__connection_status, mcp__android-debugger__hot_swap_revert
+allowed-tools: AskUserQuestion, mcp__plugin_android-debugger_android-debugger__connection_status, mcp__plugin_android-debugger_android-debugger__hot_swap_revert
 ---
 
 # Patch-revert — undo a HotSwap
@@ -11,14 +11,14 @@ The user wants to roll back a HotSwap. Revert sources from the JVMTI agent's `Cl
 
 ## What you do
 
-1. Call `mcp__android-debugger__connection_status`. If not attached, tell the user to run `/android-debugger:ad-attach` and stop.
+1. Call `mcp__plugin_android-debugger_android-debugger__connection_status`. If not attached, tell the user to run `/android-debugger:ad-attach` and stop.
 
 2. Read the argument:
    - **Empty** → revert every class swapped this session.
    - **One FQN** (e.g., `com.example.app.LoginActivity`) → revert just that class.
    - **Anything else** → ask the user to clarify via `AskUserQuestion`. Don't guess.
 
-3. Call `mcp__android-debugger__hot_swap_revert` with the parsed args. Pass `force_re_enter: true` (the default) so the swap takes effect on threads currently paused in the targeted methods.
+3. Call `mcp__plugin_android-debugger_android-debugger__hot_swap_revert` with the parsed args. Pass `force_re_enter: true` (the default) so the swap takes effect on threads currently paused in the targeted methods.
 
 4. Report the result. The tool returns:
    - On success: `reverted` (array of FQNs) and `no_snapshot` (array of FQNs that weren't in the cache — typically classes loaded before the agent attached).

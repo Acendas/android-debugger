@@ -1,7 +1,7 @@
 ---
 name: ad-detach
 description: Detach the Android debugger and release the app.
-allowed-tools: mcp__android-debugger__detach, mcp__android-debugger__connection_status
+allowed-tools: mcp__plugin_android-debugger_android-debugger__detach, mcp__plugin_android-debugger_android-debugger__connection_status
 ---
 
 # Detach — clean shutdown of the debug session
@@ -10,7 +10,7 @@ Always call this at the end of a session. Forgetting to detach can leave the app
 
 ## What you do
 
-1. Call `mcp__android-debugger__detach`. The tool is idempotent — calling when unattached returns `{ ok: true, was_attached: false }` cleanly.
+1. Call `mcp__plugin_android-debugger_android-debugger__detach`. The tool is idempotent — calling when unattached returns `{ ok: true, was_attached: false }` cleanly.
 
 2. Render the result as a one-liner:
    - If `was_attached: true`: `detached from <package>; released tcp:<port>` (port comes from the response's `released_port`).

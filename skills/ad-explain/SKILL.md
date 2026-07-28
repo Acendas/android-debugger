@@ -1,7 +1,7 @@
 ---
 name: ad-explain
 description: Explain why the Android debugger paused here.
-allowed-tools: mcp__android-debugger__frame_snapshot, mcp__android-debugger__evaluate, mcp__android-debugger__inspect_object
+allowed-tools: mcp__plugin_android-debugger_android-debugger__frame_snapshot, mcp__plugin_android-debugger_android-debugger__evaluate, mcp__plugin_android-debugger_android-debugger__inspect_object
 ---
 
 # Explain — what's happening at this pause
@@ -10,7 +10,7 @@ The bread-and-butter workflow. Every breakpoint hit, every step pause, every exc
 
 ## What you do
 
-1. Call `mcp__android-debugger__frame_snapshot` (depth defaults to 5; pass `depth: 10` if the user is investigating a deep stack). Errors `vm_running` if not paused — say so and stop.
+1. Call `mcp__plugin_android-debugger_android-debugger__frame_snapshot` (depth defaults to 5; pass `depth: 10` if the user is investigating a deep stack). Errors `vm_running` if not paused — say so and stop.
 
 2. Render a tight summary:
 
