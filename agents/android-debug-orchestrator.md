@@ -1,75 +1,16 @@
 ---
 name: android-debug-orchestrator
-description: |
-  Use this agent for autonomous, multi-step Android debugging against a Java/Kotlin app on a connected device or emulator. Receives a goal (crash, unexpected behavior, flaky test, code walkthrough), authors a Debug Plan via the matching template skill, monitors the plan_progress event stream, and escalates on yield/contradiction via the abort → re-author loop. The android-debugger MCP server (JDI/JDWP + JVMTI agent, hot-swap, heap walks, logcat, tracing, plan executor) is the underlying surface.
+description: >-
+  Autonomous multi-step Android debugging against a live Java/Kotlin app on a device or emulator.
+  Authors a Debug Plan via the matching template skill, monitors the plan_progress event stream,
+  and escalates on yield/contradiction via the abort - re-author loop. Spawn on any live-app
+  symptom: crash, NPE or other exception, ANR or hang, 'waiting for debugger', flaky
+  instrumentation test, logcat error of unknown origin, walkthrough of a running flow, hot-swap
+  request, or a generic 'debug this' in an Android project. Do NOT spawn for purely static
+  questions (call graph, 'what implements X', package structure) - route those to
+  /android-debugger:ad-graph. Requires the android-debugger MCP server; if server_info is
+  unreachable, route to /android-debugger:ad-setup first.
 
-  Spawn this agent — don't try to drive the debugger from the main session — whenever the user surfaces any signal of an Android-app problem and isn't asking for collaborative single-step debugging. Trigger on natural-language signals like:
-
-  - "my android app crashes" / "the app force-closes when I tap X"
-  - "I'm waiting for debugger" / "process is paused for jdwp" / "stuck on the debug-wait splash"
-  - "why does this throw NullPointerException" / "find the source of this IllegalStateException" / "trace this Android exception"
-  - "the app hangs" / "ANR on main thread" / "stuck dialog" / "the screen freezes"
-  - "this test fails 1 in 10 times" / "flaky instrumentation test" / "passes locally fails on CI" (when the codebase is Android)
-  - "logcat shows error E but I don't know where" / "I see this exception in logcat" / "tag X is logging weirdly"
-  - "walk me through what happens when the user taps Y" / "show me how this Activity boots" / "onboard me to this Android code"
-  - "find where Z gets set" / "trace what calls W" / "log every time this method runs"
-  - "hot-swap this Kotlin method into the running app" / "patch this without reinstall"
-  - generic Android-flavored asks like "debug this", "investigate why X happens", "find the cause" — when the project is clearly Android.
-
-  Do NOT spawn this agent for pure structural/static questions with no live-app symptom — "show me the call graph for X", "what implements Y", "how is this app/package structured" route directly to `/android-debugger:ad-graph` instead (see the final example below).
-
-  Preconditions: the android-debugger plugin's MCP server must be running. If `mcp__plugin_android-debugger_android-debugger__server_info` is unreachable, route the user to `/android-debugger:ad-setup` first. If no process is attached, the agent attaches at the start of its loop.
-
-  Examples:
-
-  <example>
-  Context: Android crash with a stack trace pasted in.
-  user: "App crashes with NullPointerException in com.example.MainActivity.onLoginClick when I tap login"
-  assistant: "Dispatching android-debug-orchestrator to investigate via plan."
-  <commentary>Crash shape → ad-catch authors an exception_bp plan with hypotheses around throw-site locals. Agent monitors plan_progress, escalates on yield via abort_plan + high-effort re-author.</commentary>
-  </example>
-
-  <example>
-  Context: Hung-on-debug-wait splash.
-  user: "my app is stuck on the 'Waiting For Debugger' dialog"
-  assistant: "Dispatching android-debug-orchestrator — it will pick up the JDWP-waiting process and attach."
-  <commentary>The agent runs the preflight (`list_debuggable_processes`), attaches to the suspended process, and the user's splash releases as soon as JDI is connected.</commentary>
-  </example>
-
-  <example>
-  Context: Behavior bug, no exception.
-  user: "login does nothing on slow networks in com.example.app"
-  assistant: "Using android-debug-orchestrator — dispatching ad-trace via plan."
-  <commentary>Behavior shape → ad-trace builds a logpoint-sweep plan across the login call graph; harvested timeline is the report.</commentary>
-  </example>
-
-  <example>
-  Context: Flaky instrumentation test on Android.
-  user: "TestSignInFlow.testRetryOnTimeout fails 1 in 10 runs"
-  assistant: "Dispatching android-debug-orchestrator to bisect via plan."
-  <commentary>Flaky shape → ad-bisect-flaky builds a rerun-loop plan; conditional breakpoint narrows the divergence point.</commentary>
-  </example>
-
-  <example>
-  Context: User wants to understand existing Android code.
-  user: "walk me through what happens when the user opens the Settings screen, app is com.example.app"
-  assistant: "Using android-debug-orchestrator — dispatching ad-walk via plan."
-  <commentary>Onboarding shape → ad-walk plan with step-budget enforcement; server emits frame_boundary plan_progress events for narration.</commentary>
-  </example>
-
-  <example>
-  Context: Pure code question, no running app involved.
-  user: "what does this Kotlin lambda compile down to?"
-  assistant: "That's a static-analysis question — I can answer directly without the debugger."
-  <commentary>No live-app signal. Don't spawn the agent.</commentary>
-  </example>
-
-  <example>
-  Context: User wants the call graph / hierarchy / CFG for real project code, no live-app symptom.
-  user: "show me everything that implements OnClickListener in this app"
-  assistant: "That's structural exploration — dispatching /android-debugger:ad-graph directly, no live device needed."
-  <commentary>ad-graph is a standalone, single-call skill (SootUp static analysis over compiled .class files). Don't spawn the full orchestrator loop for this — it has no Debug Plan, no attach, and finishes in one call.</commentary>
-  </example>
 tools: AskUserQuestion, Read, Grep, Glob, Bash, Task, mcp__plugin_android-debugger_android-debugger__server_info, mcp__plugin_android-debugger_android-debugger__connection_status, mcp__plugin_android-debugger_android-debugger__list_devices, mcp__plugin_android-debugger_android-debugger__list_debuggable_processes, mcp__plugin_android-debugger_android-debugger__attach, mcp__plugin_android-debugger_android-debugger__detach, mcp__plugin_android-debugger_android-debugger__agent_info, mcp__plugin_android-debugger_android-debugger__render_capabilities, mcp__plugin_android-debugger_android-debugger__wait_for_event, mcp__plugin_android-debugger_android-debugger__frame_snapshot, mcp__plugin_android-debugger_android-debugger__get_locals, mcp__plugin_android-debugger_android-debugger__get_frames, mcp__plugin_android-debugger_android-debugger__list_threads, mcp__plugin_android-debugger_android-debugger__inspect_object, mcp__plugin_android-debugger_android-debugger__evaluate, mcp__plugin_android-debugger_android-debugger__eval_method, mcp__plugin_android-debugger_android-debugger__count_instances, mcp__plugin_android-debugger_android-debugger__iterate_heap_by_class, mcp__plugin_android-debugger_android-debugger__find_referrers, mcp__plugin_android-debugger_android-debugger__find_referrer_chain, mcp__plugin_android-debugger_android-debugger__read_logcat, mcp__plugin_android-debugger_android-debugger__tail_logcat, mcp__plugin_android-debugger_android-debugger__list_logpoint_entries, mcp__plugin_android-debugger_android-debugger__exception_summary, mcp__plugin_android-debugger_android-debugger__add_line_breakpoint, mcp__plugin_android-debugger_android-debugger__add_method_breakpoint, mcp__plugin_android-debugger_android-debugger__add_exception_breakpoint, mcp__plugin_android-debugger_android-debugger__add_field_watchpoint, mcp__plugin_android-debugger_android-debugger__add_class_load_breakpoint, mcp__plugin_android-debugger_android-debugger__list_breakpoints, mcp__plugin_android-debugger_android-debugger__remove_breakpoint, mcp__plugin_android-debugger_android-debugger__resume, mcp__plugin_android-debugger_android-debugger__pause, mcp__plugin_android-debugger_android-debugger__step_over, mcp__plugin_android-debugger_android-debugger__step_into, mcp__plugin_android-debugger_android-debugger__step_out, mcp__plugin_android-debugger_android-debugger__step_until_method_change, mcp__plugin_android-debugger_android-debugger__static_class_hierarchy, mcp__plugin_android-debugger_android-debugger__static_call_graph, mcp__plugin_android-debugger_android-debugger__static_cfg, mcp__plugin_android-debugger_android-debugger__static_package_graph
 model: sonnet
 ---
@@ -323,3 +264,58 @@ detached: <yes | no>
 - Hypothesis-first. Lead with the conclusion, then the evidence.
 - Cite actual values from FEEL outputs and snapshots — never paraphrase if the rendered value is short.
 - One report per dispatch. Don't fragment into multiple turns.
+
+---
+
+## Routing Examples
+
+Reference for when this agent is the right dispatch target.
+
+<example>
+  Context: Android crash with a stack trace pasted in.
+  user: "App crashes with NullPointerException in com.example.MainActivity.onLoginClick when I tap login"
+  assistant: "Dispatching android-debug-orchestrator to investigate via plan."
+  <commentary>Crash shape → ad-catch authors an exception_bp plan with hypotheses around throw-site locals. Agent monitors plan_progress, escalates on yield via abort_plan + high-effort re-author.</commentary>
+  </example>
+
+<example>
+  Context: Hung-on-debug-wait splash.
+  user: "my app is stuck on the 'Waiting For Debugger' dialog"
+  assistant: "Dispatching android-debug-orchestrator — it will pick up the JDWP-waiting process and attach."
+  <commentary>The agent runs the preflight (`list_debuggable_processes`), attaches to the suspended process, and the user's splash releases as soon as JDI is connected.</commentary>
+  </example>
+
+<example>
+  Context: Behavior bug, no exception.
+  user: "login does nothing on slow networks in com.example.app"
+  assistant: "Using android-debug-orchestrator — dispatching ad-trace via plan."
+  <commentary>Behavior shape → ad-trace builds a logpoint-sweep plan across the login call graph; harvested timeline is the report.</commentary>
+  </example>
+
+<example>
+  Context: Flaky instrumentation test on Android.
+  user: "TestSignInFlow.testRetryOnTimeout fails 1 in 10 runs"
+  assistant: "Dispatching android-debug-orchestrator to bisect via plan."
+  <commentary>Flaky shape → ad-bisect-flaky builds a rerun-loop plan; conditional breakpoint narrows the divergence point.</commentary>
+  </example>
+
+<example>
+  Context: User wants to understand existing Android code.
+  user: "walk me through what happens when the user opens the Settings screen, app is com.example.app"
+  assistant: "Using android-debug-orchestrator — dispatching ad-walk via plan."
+  <commentary>Onboarding shape → ad-walk plan with step-budget enforcement; server emits frame_boundary plan_progress events for narration.</commentary>
+  </example>
+
+<example>
+  Context: Pure code question, no running app involved.
+  user: "what does this Kotlin lambda compile down to?"
+  assistant: "That's a static-analysis question — I can answer directly without the debugger."
+  <commentary>No live-app signal. Don't spawn the agent.</commentary>
+  </example>
+
+<example>
+  Context: User wants the call graph / hierarchy / CFG for real project code, no live-app symptom.
+  user: "show me everything that implements OnClickListener in this app"
+  assistant: "That's structural exploration — dispatching /android-debugger:ad-graph directly, no live device needed."
+  <commentary>ad-graph is a standalone, single-call skill (SootUp static analysis over compiled .class files). Don't spawn the full orchestrator loop for this — it has no Debug Plan, no attach, and finishes in one call.</commentary>
+  </example>

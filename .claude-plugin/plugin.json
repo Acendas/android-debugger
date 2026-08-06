@@ -1,6 +1,6 @@
 {
   "name": "android-debugger",
-  "version": "2.2.2",
+  "version": "2.2.3",
   "description": "Android debugging plugin for Claude Code. Connects to debuggable APKs through ADB, JDI/JDWP, and a JVMTI agent, with MCP tools and workflow skills for breakpoints, stepping, logcat, heap inspection, method and allocation tracing, HotSwap, static class/call/package graphs, debug plans, flaky-test bisection, and guided patch/revert flows. Designed for agent-readable results and cross-platform use on macOS, Linux, and Windows.",
   "author": {
     "name": "Acendas",
