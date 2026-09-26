@@ -19,9 +19,10 @@ Countdowns are collapsed: the first tick is reported, the rest are counted into 
 
 - **Find, then act.** Read `ui_layout` before acting on a new screen. Tap by `text` / `content_desc` / `resource_id`; coordinates only when the element has no label.
 - **Icon-only buttons** (a "+" drawn as an icon with no content-desc) have no text in the tree. Tap by the `center` of the right node, and tell the user the button is unlabeled — it is also an accessibility bug in their app.
-- **Typing:** (device-verified so far only on its `no_focus` error path — the kiosk used for validation has no text fields; report odd results) the field must be focused (`"focused"` in its `state`). `ui_type` with a selector taps it first. `ui_type` replaces the field's content; no escaping needed.
+- **Typing:** the field must be focused (`"focused"` in its `state`). `ui_type` with a selector taps it first. `ui_type` replaces the field's content; no escaping needed.
 - **Scrolling:** swipe opposite to the scroll direction (swipe up to scroll down), `duration_ms` ≥ 400. Re-read after each swipe; stop when nothing new appears.
-- **Slow content:** if an expected element is missing after an action, `ui_wait(until_text: ...)` instead of re-reading in a loop.
+- **Slow content:** if an expected element is missing after an action, `ui_wait(until_text: ...)` instead of re-reading in a loop. Pick text that only the *target* screen has: `until_text` returns at once if the text is already visible, so waiting for "Console" after tapping a "Developer Console" menu item matches the menu item itself.
+- **Compose apps without presence:** `ui_wait` can't see changes (it times out). Re-read `ui_layout` after a short pause instead, and expect the first read after a navigation tap to catch the old screen mid-transition.
 - **WebViews, canvases, images, animations** may not appear in the layout: `ui_screenshot`, then `Read` the PNG to see it.
 - **Keys:** `ui_key` with `back`, `home`, `enter`, ... Kiosk apps often ignore `home`.
 
