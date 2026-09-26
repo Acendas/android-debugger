@@ -255,7 +255,23 @@ Sets an entry breakpoint, steps with a bounded step budget, narrates at frame bo
 
 Goal-driven HotSwap loop. Required `verify_via:` clause — the patch isn't done until the verify probe passes against the live VM. Pre-validates the shape diff (no field add/remove, no superclass change), dexes via embedded d8, sends to the JVMTI agent for `RedefineClasses`. Revertible.
 
-### 7. Detach cleanly
+### 7. Drive the app
+
+```
+/android-debugger:ad-drive "add one ticket and go to the payment screen"
+```
+
+Taps, types and navigates the app through an on-device UI daemon, and streams every screen change to Claude Code's Monitor — including ones nobody caused, like idle popups and countdowns. Combine with breakpoints to catch what a tap triggers. Jetpack Compose apps need `presence` (a no-op accessibility service, opt-in, settings restored exactly on stop) before they emit UI events.
+
+```
+01:49:55 action tap (781,225)
+01:49:56 screen_changed com.example.kiosk +['1', '$4.75'] -['0', '$0.00'] digits_only
+01:21:55 window WINDOW_STATE_CHANGED com.example.kiosk DialogWrapper
+01:21:56 screen_changed com.example.kiosk +['15s', 'This session will expire…', 'Dismiss'] -[…]
+01:22:13 screen_changed com.example.kiosk +[home screen…] (after 13 suppressed ticks)
+```
+
+### 8. Detach cleanly
 
 ```
 /android-debugger:ad-detach
@@ -281,6 +297,7 @@ Disposes the JDI VM, releases the adb forward, drains JVMTI ref tables, persists
 | `:patch-status` | Current HotSwap state | "What did we patch?" |
 | `:investigate` | Top-level orchestrator — triage + dispatch | Catch-all "debug this for me" |
 | `:graph` | Class hierarchy / call graph / CFG / package graph (SootUp, no attach) | "What implements X?", "Call graph of Y" |
+| `:drive` | Tap / type / navigate, with live screen-change events | "Go to the payment screen", "tap Pay and see what happens" |
 
 ## Architecture
 
@@ -307,9 +324,10 @@ A Kotlin MCP server + a native JVMTI agent + a small set of workflow skills. No 
 
 - **JDI client** — Oracle's Java Debug Interface over JDWP. Read surface (frames, locals, fields), narrow write surface (`setLocal`, `setField`, `invokeMethod`), event stream.
 - **JVMTI agent** — small C++ binary loaded INTO the app process via `cmd activity attach-agent`. Unlocks what JDWP can't do on ART: `RedefineClasses` for HotSwap, `IterateThroughHeap` for fast walks, line-rate method+allocation events. Three ABIs pre-built: arm64-v8a, x86_64, armeabi-v7a.
+- **UI daemon** — a tiny dex run as the shell user via `app_process` (no APK). Android allows one UiAutomation session per device; the daemon holds it, so screen reads, input and the accessibility event stream never fight each other. The server settles Compose's anonymous change pings into one `screen_changed` diff per screen.
 - **MCP tool surface** — ~54 tools, snake_case `<area>_<verb>`, all return `{ ok, ... }` or `{ ok: false, code, message, hint }`. The agent reasons over JSON, not stack traces.
 
-### Skills (14)
+### Skills (15)
 
 Each `/android-debugger:*` command is a [skill](https://docs.anthropic.com/en/docs/claude-code/skills) with imperative-form body. Skill bodies are written for the *agent*, not for human readers — that's the consumer model.
 
@@ -451,8 +469,18 @@ The plugin runs anywhere Claude Code runs. Server is JVM/Kotlin — runs on macO
 ### Android device introspection
 
 - `get_current_activity` — `dumpsys activity top`
-- `dump_view_hierarchy` — `uiautomator dump`
+- `dump_view_hierarchy` — `uiautomator dump` (read through the UI daemon while a UI session runs)
 - `get_app_info` — debuggable flag, target SDK, declared processes
+
+### UI driving
+
+- `ui_start` / `ui_stop` / `ui_status` — on-device daemon lifecycle; returns a ready `monitor_command` for Claude Code's Monitor
+- `ui_layout` — flat list of visible elements (text, content-desc, resource-id, center, interactions, state); no idle wait
+- `ui_tap` / `ui_long_press` / `ui_swipe` / `ui_key` / `ui_type` — input by text / content-desc / resource-id selector or coordinates
+- `ui_wait` — wait for a screen change (`until_text`, `until_gone`) instead of sleeping; race-free after the last action
+- `ui_screenshot` — PNG for WebViews, canvases and images
+- Refuses input while the attached app is paused (`vm_paused`); optional forwarding into `wait_for_event` as type `ui`
+- `presence: true` — opt-in no-op accessibility service so Compose apps emit events; exact prior settings restored on stop, repaired after a crash
 
 ### Session persistence
 

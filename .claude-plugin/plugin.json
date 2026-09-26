@@ -1,7 +1,7 @@
 {
   "name": "android-debugger",
-  "version": "2.2.3",
-  "description": "Android debugging plugin for Claude Code. Connects to debuggable APKs through ADB, JDI/JDWP, and a JVMTI agent, with MCP tools and workflow skills for breakpoints, stepping, logcat, heap inspection, method and allocation tracing, HotSwap, static class/call/package graphs, debug plans, flaky-test bisection, and guided patch/revert flows. Designed for agent-readable results and cross-platform use on macOS, Linux, and Windows.",
+  "version": "2.3.0",
+  "description": "Android debugging plugin for Claude Code. Connects to debuggable APKs through ADB, JDI/JDWP, and a JVMTI agent, with MCP tools and workflow skills for breakpoints, stepping, logcat, heap inspection, method and allocation tracing, HotSwap, static class/call/package graphs, event-driven UI driving (tap, type, navigate, live screen-change events), debug plans, flaky-test bisection, and guided patch/revert flows. Designed for agent-readable results and cross-platform use on macOS, Linux, and Windows.",
   "author": {
     "name": "Acendas",
     "email": "info@acendas.ca"
@@ -54,7 +54,12 @@
     "control-flow-graph",
     "package-graph",
     "ad-graph",
-    "acendas"
+    "acendas",
+    "ui-automation",
+    "uiautomation",
+    "ui-driving",
+    "compose-ui-events",
+    "monitor"
   ],
   "tags": [
     "android-debugger",

@@ -35,6 +35,20 @@ cd android-debugger/server
 
 The fat jar lands at `android-debugger/dist/android-debugger-server.jar` — that's the artifact `.mcp.json` launches. **Commit the rebuilt jar** when you change server code; users install the plugin and shouldn't need a build step.
 
+## Build the on-device UI artifacts
+
+```
+android-debugger/ui-daemon/build.sh
+```
+
+Produces `dist/ui/ad-ui.jar` (the UI daemon, run via `app_process`) and `dist/ui/ad-ui-presence.apk` (the opt-in no-op accessibility service). Needs an Android SDK with `platforms;android-26` and any build-tools: it compiles against API 26 on purpose, because `d8 --min-api` does not catch a newer API used by mistake. The presence APK is signed with the committed throwaway key in `ui-daemon/presence/` — every release must use the same key or upgrades fail with `INSTALL_FAILED_UPDATE_INCOMPATIBLE`. **Commit the rebuilt `dist/ui/` artifacts** alongside any daemon change, and bump `AdUiDaemon.VERSION` with `UiSession.DAEMON_VERSION` on protocol changes.
+
+Device smoke (needs a connected device; `--presence` changes and then restores accessibility settings):
+
+```
+python3 android-debugger/tools/smoke_ui.py --serial <serial> [--presence] [--tap-xy X,Y --undo-xy X,Y] [--pause-package <pkg>]
+```
+
 ## Run the unit tests
 
 ```

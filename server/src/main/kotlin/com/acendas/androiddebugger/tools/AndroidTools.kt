@@ -405,6 +405,22 @@ object AndroidTools {
             toolAnnotations = ToolAnnotations(readOnlyHint = false, openWorldHint = true),
         ) {
             runTool(allowsDuringPlan = true, toolName = "dump_view_hierarchy") {
+                // While a UI session runs, its daemon holds the device's single UiAutomation
+                // slot and `uiautomator dump` gets killed (exit 137). Read through the daemon.
+                val ui = com.acendas.androiddebugger.ui.UiSession.active?.takeIf { it.alive }
+                if (ui != null) {
+                    val resp = com.acendas.androiddebugger.ui.UiSession.request(buildJsonObject {
+                        put("cmd", "layout"); put("full", true); put("timeout_ms", 5_000)
+                    })
+                    return@runTool toolOk {
+                        put("source", "ui_daemon")
+                        put("parse_ok", true)
+                        resp["package"]?.let { put("package", it) }
+                        put("nodes", resp["nodes"] ?: kotlinx.serialization.json.JsonArray(emptyList()))
+                        put("hint", "A UI session is running, so this is the daemon's flat node list " +
+                            "(same shape as ui_layout full=true) rather than the uiautomator tree.")
+                    }
+                }
                 val serial = Session.serial ?: LifecycleTools.resolveSerial(null)
                 val devicePath = "/sdcard/window_dump.xml"
                 val dumpArgs = buildList {

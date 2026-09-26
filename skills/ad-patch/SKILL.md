@@ -3,7 +3,7 @@ name: ad-patch
 description: Hot-swap a method body into the running Android app.
 model: sonnet
 argument-hint: "<goal> verify_via: <success criterion>"
-allowed-tools: AskUserQuestion, Bash, Read, Edit, Glob, Grep, mcp__plugin_android-debugger_android-debugger__connection_status, mcp__plugin_android-debugger_android-debugger__agent_info, mcp__plugin_android-debugger_android-debugger__hot_swap_class, mcp__plugin_android-debugger_android-debugger__hot_swap_classes, mcp__plugin_android-debugger_android-debugger__hot_swap_revert, mcp__plugin_android-debugger_android-debugger__list_threads, mcp__plugin_android-debugger_android-debugger__frame_snapshot, mcp__plugin_android-debugger_android-debugger__wait_for_event, mcp__plugin_android-debugger_android-debugger__dump_view_hierarchy, mcp__plugin_android-debugger_android-debugger__get_current_activity
+allowed-tools: AskUserQuestion, Bash, Read, Edit, Glob, Grep, mcp__plugin_android-debugger_android-debugger__connection_status, mcp__plugin_android-debugger_android-debugger__agent_info, mcp__plugin_android-debugger_android-debugger__hot_swap_class, mcp__plugin_android-debugger_android-debugger__hot_swap_classes, mcp__plugin_android-debugger_android-debugger__hot_swap_revert, mcp__plugin_android-debugger_android-debugger__list_threads, mcp__plugin_android-debugger_android-debugger__frame_snapshot, mcp__plugin_android-debugger_android-debugger__wait_for_event, mcp__plugin_android-debugger_android-debugger__get_current_activity, mcp__plugin_android-debugger_android-debugger__ui_start, mcp__plugin_android-debugger_android-debugger__ui_stop, mcp__plugin_android-debugger_android-debugger__ui_layout, mcp__plugin_android-debugger_android-debugger__ui_tap, mcp__plugin_android-debugger_android-debugger__ui_type, mcp__plugin_android-debugger_android-debugger__ui_key, mcp__plugin_android-debugger_android-debugger__ui_swipe, mcp__plugin_android-debugger_android-debugger__ui_wait
 ---
 
 # Patch — edit, hot-swap, verify
@@ -65,9 +65,11 @@ Two clauses, separated by `verify_via:`. Both are required. Refuse to enter the 
    On `code: capability_unavailable` for `force_re_enter`, retry once with `force_re_enter: false` and note the caveat in the response.
 
 9. **Drive the verify clause.** Parse `verify_via:` into an action + expectation. Common patterns:
-   - "tap X and expect Y to be foreground" → use `mcp__plugin_android-debugger_android-debugger__dump_view_hierarchy` to find X, then `adb shell input tap` via Bash, then `mcp__plugin_android-debugger_android-debugger__get_current_activity` to confirm Y.
+   - "tap X and expect Y visible" → `mcp__plugin_android-debugger_android-debugger__ui_start` if no UI session runs, `ui_tap(text: X)`, then `ui_wait(until_text: Y)`. Confirm the foreground activity with `mcp__plugin_android-debugger_android-debugger__get_current_activity` when the expectation names one.
    - "set breakpoint on Z and observe variable W" → install the breakpoint, `wait_for_event`, `frame_snapshot`, check W.
-   - "navigate to settings and expect Y visible" → use `dump_view_hierarchy` to read current screen, navigate via input events, re-dump.
+   - "navigate to settings and expect Y visible" → `ui_layout` to read the screen, act with `ui_tap` / `ui_swipe` / `ui_key`, `ui_wait` after each step (never sleep), until `until_text: Y` matches.
+
+   UI tools refuse with `vm_paused` while the app is suspended — resume before driving. Do not shell `adb shell input` via Bash: it bypasses the UI daemon. Call `ui_stop` when verification is done unless the user is still driving.
 
    Report `verified: true` only when the expectation is observably satisfied. On failure, `verified: false` with the reason — the actual observation vs. the expected.
 

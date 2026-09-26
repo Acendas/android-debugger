@@ -92,6 +92,13 @@ def main() -> int:
         check("ui_layout returns nodes", lay.get("ok") and len(lay.get("nodes", [])) > 0,
               f"package={lay.get('package')} nodes={len(lay.get('nodes', []))} elapsed={lay.get('elapsed_ms')}ms")
 
+        info = c.tool("server_info")
+        check("server_info reports ui daemon + running session",
+              info.get("ui_daemon") == "present" and info.get("ui_session") == "running", str(info.get("ui_session")))
+        dv = c.tool("dump_view_hierarchy", timeout=60)
+        check("dump_view_hierarchy routes through the daemon", dv.get("source") == "ui_daemon",
+              f"nodes={len(dv.get('nodes', []))}")
+
         shot = c.tool("ui_screenshot")
         check("ui_screenshot writes a png", shot.get("ok") and shot.get("bytes", 0) > 1000, json.dumps(shot)[:200])
 

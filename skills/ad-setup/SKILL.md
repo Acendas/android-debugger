@@ -21,16 +21,19 @@ The first thing to run after install. Also the diagnostic to fall back to whenev
 
 4. If both server and adb are reachable, call `mcp__plugin_android-debugger_android-debugger__list_devices` to confirm at least one device or emulator is connected. Do **not** start an emulator on the user's behalf — they may have a specific AVD they want; just point them at how to start one if no devices are listed.
 
-5. Report back as a compact table:
+5. Check UI driving from the same `server_info` reply: `ui_daemon: "present"` means the on-device UI artifacts shipped (`dist/ui/`); `"missing"` means an incomplete install — reinstall the plugin. `ui_session` shows whether a UI session is running. If the user reports that `uiautomator dump`, `android layout`, or a UI test "fails for no reason", a running UI session holding the device's single UI automation slot is the likely cause — `/android-debugger:ad-drive` stops it with `ui_stop`.
+
+6. Report back as a compact table:
 
    ```
    server jar:   ok  (v1.0.0)
    jdk:          ok  (21.0.8)
    adb:          ok  (/Users/.../platform-tools/adb)
    devices:      1 connected (Pixel_Tablet)
+   ui driving:   ok  (daemon present, no session)
    ```
 
-6. After reporting, if the user is ready to attach, recommend `/android-debugger:ad-attach` — its response carries the per-device JDI capability map (whose flags depend on the ART version on the connected device). `:status` will surface that map after attachment.
+7. After reporting, if the user is ready to attach, recommend `/android-debugger:ad-attach` — its response carries the per-device JDI capability map (whose flags depend on the ART version on the connected device). `:status` will surface that map after attachment.
 
 ## What you do NOT do
 

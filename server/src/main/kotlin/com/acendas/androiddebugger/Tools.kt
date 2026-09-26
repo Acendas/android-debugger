@@ -62,6 +62,13 @@ object Tools {
                 put("jdk_vendor", System.getProperty("java.vendor") ?: "unknown")
                 put("os_name", System.getProperty("os.name") ?: "unknown")
                 put("os_arch", System.getProperty("os.arch") ?: "unknown")
+                // UI driving artifacts ship in dist/ui; missing means an incomplete install.
+                val uiDir = PluginRoot.resolve()?.resolve("dist")?.resolve("ui")
+                val uiOk = uiDir != null &&
+                    java.nio.file.Files.isRegularFile(uiDir.resolve("ad-ui.jar")) &&
+                    java.nio.file.Files.isRegularFile(uiDir.resolve("ad-ui-presence.apk"))
+                put("ui_daemon", if (uiOk) "present" else "missing")
+                put("ui_session", com.acendas.androiddebugger.ui.UiSession.active?.let { if (it.alive) "running" else "dead" } ?: "stopped")
                 val adb = AdbLocator.find()
                 if (adb != null) {
                     put("adb_path", adb)
