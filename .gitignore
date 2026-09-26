@@ -25,3 +25,8 @@ Thumbs.db
 # dist/agents/<abi>/libamdb_agent.so) is committed; the intermediates under
 # agent/build/ are not. Rebuild with `./agent/build.sh` or `./gradlew assembleAgent`.
 agent/build/
+
+# ui-daemon intermediates (dist/ui is committed)
+ui-daemon/build/
+ui-daemon/presence/build/
+__pycache__/

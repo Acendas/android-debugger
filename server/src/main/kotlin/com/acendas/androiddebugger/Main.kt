@@ -23,7 +23,14 @@ import java.io.PrintStream
  * System.out to stderr so any stray println goes somewhere harmless. The captured stream
  * is what we hand to StdioServerTransport.
  */
-fun main(): Unit {
+fun main(args: Array<String>): Unit {
+    // `ui-follow` is the Monitor source for UI events, not the MCP server. It must run
+    // BEFORE BannerSuppressor below: that redirects System.out to stderr, and Monitor
+    // only reads stdout, so a follower started after it would print nothing.
+    if (args.firstOrNull() == "ui-follow") {
+        kotlin.system.exitProcess(com.acendas.androiddebugger.ui.UiFollow.run(args.drop(1)))
+    }
+
     // Per Story 7.1.6 — extracted into [BannerSuppressor] so the swap is reusable from
     // tests (the JSON-RPC stdout-cleanliness regression test installs the same shim).
     val realStdout: PrintStream = BannerSuppressor.installAndCapture()
@@ -35,7 +42,11 @@ fun main(): Unit {
     // the JDI VM if we exit unexpectedly. Without this, a killed server leaves the app
     // suspended at the next breakpoint hit and the local TCP port forwarded forever.
     Runtime.getRuntime().addShutdownHook(
-        Thread({ runCatching { Session.detach() } }, "android-debugger-shutdown"),
+        Thread({
+            // UI first: it restores the device's accessibility settings if presence was on.
+            runCatching { com.acendas.androiddebugger.ui.UiSession.stop() }
+            runCatching { Session.detach() }
+        }, "android-debugger-shutdown"),
     )
 
     runBlocking {

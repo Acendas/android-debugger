@@ -92,6 +92,26 @@ class Adb(
     }
 
     /**
+     * Forward a free local TCP port to an abstract Unix socket on the device (the UI
+     * daemon listens on `localabstract:ad-ui`). Tracked like [forwardJdwp] so
+     * [releaseAllForwards] cleans it up on shutdown.
+     */
+    fun forwardAbstract(serial: String?, socketName: String): Int? {
+        val port = portPicker()
+        val args = buildList {
+            if (serial != null) { add("-s"); add(serial) }
+            add("forward"); add("tcp:$port"); add("localabstract:$socketName")
+        }
+        val r = runText(args, timeoutMs = 5_000)
+        return if (r is AdbResult.Success) {
+            forwards.add(serial to port)
+            port
+        } else {
+            null
+        }
+    }
+
+    /**
      * Story 0.1.3: remove a previously created forward. Idempotent — if adb reports the
      * forward doesn't exist, we still drop it from our tracking set.
      */

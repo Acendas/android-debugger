@@ -74,6 +74,16 @@ enum class ErrorCode(val code: String) {
     SceneBuildFailed("scene_build_failed"),
     /** v1.8: `class_dirs` was empty or none of the given paths exist. */
     ClassDirsEmptyOrMissing("class_dirs_empty_or_missing"),
+
+    /** UI driving: a `ui_*` tool was called before `ui_start` (or after the daemon died). */
+    UiNotStarted("ui_not_started"),
+    /**
+     * UI driving: the on-device daemon refused a request. The daemon's own code rides in
+     * `daemon_code` (`timeout`, `no_root`, `no_focus`, `inject_failed`, `released`, ...).
+     */
+    UiDaemonError("ui_daemon_error"),
+    /** UI driving: a text / content-desc / resource-id selector matched nothing on screen. */
+    UiElementNotFound("ui_element_not_found"),
 }
 
 /**

@@ -1,0 +1,4 @@
+<resources>
+    <string name="label">android-debugger UI presence</string>
+    <string name="description">Lets Jetpack Compose apps emit accessibility events while android-debugger is watching the UI. Observes nothing itself.</string>
+</resources>

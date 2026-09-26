@@ -41,6 +41,9 @@ object Tools {
         // v1.8 — SootUp-backed static analysis tools (class hierarchy, call graph,
         // CFG, package graph). Standalone — no VmCoordinator/session coupling.
         com.acendas.androiddebugger.tools.StaticAnalysisTools.register(server)
+        // UI driving — on-device UiAutomation daemon, screen diffs, input. Independent
+        // of attach and of Session.mutex.
+        com.acendas.androiddebugger.tools.UiTools.register(server)
     }
 
     private fun registerServerInfo(server: Server) {

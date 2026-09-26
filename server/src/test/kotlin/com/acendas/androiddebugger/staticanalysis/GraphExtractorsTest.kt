@@ -273,3 +273,4 @@ class GraphExtractorsTest {
             isolatedDir.deleteRecursively()
         }
     }
+}

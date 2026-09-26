@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Subscribes to nothing and never touches the UI. It exists only so Jetpack Compose's
+     "is a real accessibility service enabled?" gate passes and Compose emits events,
+     which the ad-ui daemon receives through its own UiAutomation session. -->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:description="@string/description"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:notificationTimeout="0"
+    android:canRetrieveWindowContent="false" />

@@ -105,6 +105,20 @@ sealed class DebugEvent {
     }
 
     /**
+     * A UI event (`screen_changed`, `ui_window`, `ui_action`, ...) forwarded from the UI
+     * session. Only published here when `ui_start(forward_to_debug_events: true)` asked
+     * for it: this channel is 128 slots DROP_OLDEST and must not lose a `stopped` event
+     * to a chatty screen. The UI session's own queue (`ui_wait`) always has them.
+     */
+    data class Ui(val payload: JsonObject) : DebugEvent() {
+        override val type: String = "ui"
+        override fun toJson(): JsonObject = buildJsonObject {
+            put("type", type)
+            for ((k, v) in payload) if (k != "type") put(k, v)
+        }
+    }
+
+    /**
      * v1.7 Debug Plan progress signal. Emitted by the Plan Executor as it dispatches
      * events through the plan's handler chain, captures snapshots, evaluates FEEL
      * expressions, and reaches terminal states. Agent polls these via
