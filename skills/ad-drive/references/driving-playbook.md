@@ -19,7 +19,7 @@ Countdowns are collapsed: the first tick is reported, the rest are counted into 
 
 - **Find, then act.** Read `ui_layout` before acting on a new screen. Tap by `text` / `content_desc` / `resource_id`; coordinates only when the element has no label.
 - **Icon-only buttons** (a "+" drawn as an icon with no content-desc) have no text in the tree. Tap by the `center` of the right node, and tell the user the button is unlabeled — it is also an accessibility bug in their app.
-- **Typing:** the field must be focused (`"focused"` in its `state`). `ui_type` with a selector taps it first. `ui_type` replaces the field's content; no escaping needed.
+- **Typing:** (device-verified so far only on its `no_focus` error path — the kiosk used for validation has no text fields; report odd results) the field must be focused (`"focused"` in its `state`). `ui_type` with a selector taps it first. `ui_type` replaces the field's content; no escaping needed.
 - **Scrolling:** swipe opposite to the scroll direction (swipe up to scroll down), `duration_ms` ≥ 400. Re-read after each swipe; stop when nothing new appears.
 - **Slow content:** if an expected element is missing after an action, `ui_wait(until_text: ...)` instead of re-reading in a loop.
 - **WebViews, canvases, images, animations** may not appear in the layout: `ui_screenshot`, then `Read` the PNG to see it.

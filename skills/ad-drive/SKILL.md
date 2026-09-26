@@ -2,7 +2,7 @@
 name: ad-drive
 description: Drive the app's UI and watch screen changes.
 argument-hint: "[what to do, e.g. 'add one ticket and go to payment']"
-allowed-tools: AskUserQuestion, Read, Monitor, mcp__plugin_android-debugger_android-debugger__ui_start, mcp__plugin_android-debugger_android-debugger__ui_stop, mcp__plugin_android-debugger_android-debugger__ui_status, mcp__plugin_android-debugger_android-debugger__ui_layout, mcp__plugin_android-debugger_android-debugger__ui_tap, mcp__plugin_android-debugger_android-debugger__ui_long_press, mcp__plugin_android-debugger_android-debugger__ui_swipe, mcp__plugin_android-debugger_android-debugger__ui_key, mcp__plugin_android-debugger_android-debugger__ui_type, mcp__plugin_android-debugger_android-debugger__ui_wait, mcp__plugin_android-debugger_android-debugger__ui_screenshot, mcp__plugin_android-debugger_android-debugger__list_devices, mcp__plugin_android-debugger_android-debugger__connection_status
+allowed-tools: AskUserQuestion, Read, ToolSearch, Monitor, mcp__plugin_android-debugger_android-debugger__ui_start, mcp__plugin_android-debugger_android-debugger__ui_stop, mcp__plugin_android-debugger_android-debugger__ui_status, mcp__plugin_android-debugger_android-debugger__ui_layout, mcp__plugin_android-debugger_android-debugger__ui_tap, mcp__plugin_android-debugger_android-debugger__ui_long_press, mcp__plugin_android-debugger_android-debugger__ui_swipe, mcp__plugin_android-debugger_android-debugger__ui_key, mcp__plugin_android-debugger_android-debugger__ui_type, mcp__plugin_android-debugger_android-debugger__ui_wait, mcp__plugin_android-debugger_android-debugger__ui_screenshot, mcp__plugin_android-debugger_android-debugger__list_devices, mcp__plugin_android-debugger_android-debugger__connection_status
 ---
 
 # Drive — operate the app's UI, event-driven
@@ -15,7 +15,7 @@ Tap, type and navigate the app on a device, and see every screen change as it ha
    - `warnings: ["compose_events_suppressed"]` → the app is Jetpack Compose and sends no UI events yet. Reads and taps still work, but screen changes won't be pushed. Ask with `AskUserQuestion` before enabling presence: it installs a no-op accessibility service and changes a secure setting; `ui_stop` restores the exact prior values. If yes: `ui_stop`, then `ui_start(presence: true)`.
    - `ui_daemon_error` "did not start" → another UI automation client (a running UI test, Appium, Maestro, `uiautomator`, `android layout`) holds the device's single slot. Tell the user; don't retry in a loop.
 
-2. **Watch.** Arm `Monitor` with the `monitor_command` exactly as returned (`timeout_ms: 1800000`, description like "app screen changes on <serial>"). Each line is one screen change, window, or action. Re-arm on expiry while you still need it. Monitor is visibility only — base decisions on `ui_wait` / `ui_layout` results, never on a Monitor line alone.
+2. **Watch.** Arm `Monitor` with the `monitor_command` exactly as returned (`timeout_ms: 1800000`, description like "app screen changes on <serial>"). Each line is one screen change, window, or action. Re-arm on expiry while you still need it. If Monitor isn't loaded, load it with `ToolSearch` (`select:Monitor`). Monitor is visibility only — base decisions on `ui_wait` / `ui_layout` results, never on a Monitor line alone.
 
 3. **Loop: read → act → wait.**
    - `ui_layout` to see the screen (text, content-desc, resource-id, center, interactions).

@@ -61,6 +61,13 @@ public final class AdUiDaemon {
     static final int FLAG_DONT_SUPPRESS_A11Y = 1;
     /** Compose emits bursts of anonymous content-changed pings; forward at most one per window. */
     static final long CONTENT_COALESCE_MS = 100;
+    /**
+     * Exit when no host connection has existed for this long (after the first one). If the
+     * host server is SIGKILLed its sockets close but the `adb shell` running us can be
+     * orphaned; without this we would hold the device's only UiAutomation slot forever and
+     * the user's UI tests / `uiautomator dump` would fail "for no reason".
+     */
+    static final long ORPHAN_EXIT_MS = 10_000;
 
     private final Object lock = new Object();
     private final CopyOnWriteArrayList<OutputStream> subscribers = new CopyOnWriteArrayList<>();
@@ -68,6 +75,9 @@ public final class AdUiDaemon {
     private HandlerThread automationThread;
     private UiAutomation automation;
     private long lastContentForwardedAt = 0;
+    private final java.util.concurrent.atomic.AtomicInteger clients =
+            new java.util.concurrent.atomic.AtomicInteger();
+    private volatile boolean everConnected = false;
 
     public static void main(String[] args) throws Exception {
         if (Looper.getMainLooper() == null) Looper.prepareMainLooper();
@@ -172,8 +182,11 @@ public final class AdUiDaemon {
         LocalServerSocket server = new LocalServerSocket(SOCKET);
         System.out.println("ad-ui ready v" + VERSION + " sdk " + Build.VERSION.SDK_INT);
         System.out.flush();
+        startOrphanWatchdog();
         while (true) {
             LocalSocket client = server.accept();
+            clients.incrementAndGet();
+            everConnected = true;
             Thread t = new Thread(() -> handle(client), "ad-ui-client");
             t.setDaemon(true);
             t.start();
@@ -210,8 +223,38 @@ public final class AdUiDaemon {
             }
         } catch (Exception ignored) {
         } finally {
+            subscribersRemoveFor(client);
+            clients.decrementAndGet();
             try { client.close(); } catch (Exception ignored) { }
         }
+    }
+
+    private void subscribersRemoveFor(LocalSocket client) {
+        try {
+            subscribers.remove(client.getOutputStream());
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void startOrphanWatchdog() {
+        Thread t = new Thread(() -> {
+            long idleSince = -1;
+            while (true) {
+                SystemClock.sleep(1000);
+                if (!everConnected || clients.get() > 0) {
+                    idleSince = -1;
+                    continue;
+                }
+                long now = SystemClock.uptimeMillis();
+                if (idleSince < 0) idleSince = now;
+                if (now - idleSince >= ORPHAN_EXIT_MS) {
+                    try { release(); } catch (Exception ignored) { }
+                    System.exit(0);
+                }
+            }
+        }, "ad-ui-orphan-watchdog");
+        t.setDaemon(true);
+        t.start();
     }
 
     private static void write(OutputStream out, JSONObject o) throws Exception {

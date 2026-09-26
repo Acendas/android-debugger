@@ -433,7 +433,9 @@ object UiTools {
                 val kinds = (args?.get("kinds") as? JsonArray)?.mapNotNull { it.jsonPrimitive.contentOrNull }?.toSet()
                     ?: if (untilText != null || untilGone != null) setOf("screen_changed") else setOf("screen_changed", "ui_window")
                 val timeout = (args.long("timeout_ms") ?: 10_000L).coerceIn(1, WAIT_MAX_MS)
-                val after = args.long("after_seq") ?: a.lastInputSeq
+                // Default: after the last action, so a change that landed before this call is
+                // seen. With no action yet, only changes from now on (not the baseline).
+                val after = args.long("after_seq") ?: if (a.lastInputSeq > 0) a.lastInputSeq else a.hub.seq
 
                 if (untilText != null) {
                     val now = runCatching {
@@ -450,6 +452,7 @@ object UiTools {
                     when {
                         kind == "ui_disconnected" -> true
                         kind !in kinds -> false
+                        (e["first"] as? JsonPrimitive)?.booleanOrNull == true -> false // baseline, not a change
                         untilText != null -> strings(e, "added").any { it.contains(untilText, ignoreCase = true) }
                         untilGone != null -> strings(e, "removed").any { it.contains(untilGone, ignoreCase = true) }
                         else -> true

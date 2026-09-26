@@ -108,11 +108,12 @@ object UiSession {
         }
         val s = listOf("-s", serial)
 
-        // A killed server can leave presence enabled; repair before anything else.
+        // Kill any stale daemon FIRST: while its UiAutomation session unregisters, the
+        // platform rewrites accessibility_enabled, which would race the repair below.
+        adb.runText(s + listOf("shell", "pkill -f $DAEMON_CLASS"), timeoutMs = 5_000)
+        // A killed server can leave presence enabled; repair before enabling anything.
         val presenceHelper = Presence(adb, serial)
         val repaired = runCatching { presenceHelper.repairIfStale() }.getOrDefault(false)
-
-        adb.runText(s + listOf("shell", "pkill -f $DAEMON_CLASS"), timeoutMs = 5_000)
 
         // Presence must be on BEFORE the daemon connects. Compose re-reads the enabled
         // service list only when accessibility flips off -> on; once our UiAutomation
@@ -244,10 +245,22 @@ object UiSession {
         return cursor
     }
 
-    /** Refuse UI input/reads while the attached app is suspended in the debugger. */
+
+    /**
+     * True when the attached app's UI thread is actually suspended. Breakpoints default to
+     * SUSPEND_EVENT_THREAD, so ATTACHED_PAUSED alone may mean only a background thread is
+     * stopped while the UI thread still runs.
+     */
+    fun appUiFrozen(): Boolean {
+        if (Session.state != SessionState.ATTACHED_PAUSED) return false
+        val main = Session.mainThread ?: return true
+        return runCatching { main.isSuspended }.getOrDefault(true)
+    }
+
+    /** Refuse UI input/reads while the attached app's UI thread is suspended in the debugger. */
     fun requireNotPaused(allowWhilePaused: Boolean) {
         if (allowWhilePaused) return
-        if (Session.state == SessionState.ATTACHED_PAUSED) {
+        if (appUiFrozen()) {
             throw ToolError(
                 errorCode = ErrorCode.VmPaused,
                 message = "The attached app (${Session.packageName}) is paused in the debugger. Its UI " +
@@ -307,7 +320,7 @@ object UiSession {
         }
         val a = active?.takeIf { it.alive } ?: return
         // A paused app can't answer reads; every ping would become a 2 s timeout line.
-        if (Session.state == SessionState.ATTACHED_PAUSED) {
+        if (appUiFrozen()) {
             // Re-check until the debugger resumes; then report whatever changed meanwhile.
             synchronized(scheduler) {
                 if (pendingSettle == null) {

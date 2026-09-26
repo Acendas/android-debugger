@@ -21,7 +21,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shlex
 import subprocess
 import sys
 import threading
@@ -58,6 +57,9 @@ def main() -> int:
     ap.add_argument("--tap-xy")
     ap.add_argument("--undo-xy", help="tap that reverts --tap-xy (e.g. the minus next to a plus)")
     ap.add_argument("--pause-package")
+    ap.add_argument("--inputs", metavar="LABEL", help="exercise swipe/long-press(on LABEL)/key/type-error")
+    ap.add_argument("--crash-test", action="store_true",
+                    help="with --presence: kill -9 the server, expect daemon self-exit and repair on next start")
     ap.add_argument("--expect-compose", action="store_true",
                     help="foreground app is Compose: without --presence, expect the suppression warning")
     opts = ap.parse_args()
@@ -84,7 +86,8 @@ def main() -> int:
         if not opts.presence and opts.expect_compose:
             check("compose_events_suppressed warned", "compose_events_suppressed" in (r.get("warnings") or []))
 
-        follower = subprocess.Popen(shlex.split(r["monitor_command"]), stdout=subprocess.PIPE, text=True)
+        # Monitor runs the command through the user's shell; do the same.
+        follower = subprocess.Popen(r["monitor_command"], shell=True, stdout=subprocess.PIPE, text=True)
         threading.Thread(target=lambda: [follow_lines.append(l.rstrip()) for l in follower.stdout],
                          daemon=True).start()
 
@@ -101,6 +104,19 @@ def main() -> int:
 
         shot = c.tool("ui_screenshot")
         check("ui_screenshot writes a png", shot.get("ok") and shot.get("bytes", 0) > 1000, json.dumps(shot)[:200])
+
+        if opts.inputs:
+            # Harmless on a kiosk home screen: a slow swipe over empty space, a long-press on a
+            # label, BACK (kiosks ignore it), and ui_type with no focused field (error path).
+            sw = c.tool("ui_swipe", {"x1": 512, "y1": 560, "x2": 512, "y2": 520, "duration_ms": 400})
+            check("ui_swipe injects", sw.get("ok") is True, json.dumps(sw)[:160])
+            lp = c.tool("ui_long_press", {"text": opts.inputs, "contains": True, "duration_ms": 600})
+            check("ui_long_press by text", lp.get("ok") is True, json.dumps(lp)[:160])
+            k = c.tool("ui_key", {"key": "back"})
+            check("ui_key back", k.get("ok") is True and k.get("code") == 4, json.dumps(k)[:160])
+            ty = c.tool("ui_type", {"value": "hello world"})
+            check("ui_type without focus -> structured no_focus", ty.get("code") == "ui_daemon_error"
+                  and "no_focus" in (ty.get("current_state") or ""), json.dumps(ty)[:200])
 
         if opts.tap_xy:
             x, y = map(int, opts.tap_xy.split(","))
@@ -130,14 +146,36 @@ def main() -> int:
                 check("ui_layout works after resume", g3.get("ok") is True)
                 c.tool("detach")
 
+        if opts.crash_test:
+            c.proc.kill()  # SIGKILL: no shutdown hook
+            c.proc.wait()
+            time.sleep(15)  # daemon orphan watchdog: 10 s without a host connection
+            procs = adb(opts.serial, "shell", "ps -A -o PID,PPID,NAME,ARGS | grep com.acendas.adui | grep -v grep")
+            check("daemon exited after host SIGKILL", "app_process" not in procs, f"survivors={procs!r}")
+            dump = adb(opts.serial, "shell", "uiautomator dump /data/local/tmp/crash.xml >/dev/null 2>&1; echo $?")
+            check("UiAutomation slot free again (uiautomator dump works)", dump.strip() == "0", dump)
+            adb(opts.serial, "shell", "rm -f /data/local/tmp/crash.xml")
+            c = McpClient(JAR, env)
+            c.request("initialize", {"protocolVersion": "2024-11-05", "capabilities": {},
+                                     "clientInfo": {"name": "smoke_ui", "version": "0"}})
+            c.notify("notifications/initialized")
+            r2 = c.tool("ui_start", {"serial": opts.serial}, timeout=120)
+            check("next ui_start repairs stale presence", r2.get("repaired_stale_presence") is True, json.dumps(r2)[:200])
+            try:
+                follower.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                pass
+            check("follower ended itself when the server died",
+                  any("ui_disconnected" in l for l in follow_lines), f"last={follow_lines[-1:]}")
+
         st = c.tool("ui_stop")
         check("ui_stop", st.get("ok") and st.get("stopped") is True)
         try:
             follower.wait(timeout=10)
         except subprocess.TimeoutExpired:
             follower.kill()
-        check("follower printed lines and exited on ui_stop",
-              follower.returncode == 0 and any("ui_stopped" in l for l in follow_lines),
+        check("follower printed lines and exited",
+              follower.returncode == 0 and any(("ui_stopped" in l or "ui_disconnected" in l) for l in follow_lines),
               f"{len(follow_lines)} lines")
         for line in follow_lines[:12]:
             print("   |", line)
